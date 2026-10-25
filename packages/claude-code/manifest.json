@@ -1,0 +1,12 @@
+{
+  "adapter_id": "claude-code",
+  "version": "0.0.0",
+  "harness": {},
+  "acp": "v1",
+  "profiles_qualified": [],
+  "renders": [],
+  "render_plugin": "",
+  "state_redirect": null,
+  "cost_bound": "none",
+  "session_reuse": []
+}
