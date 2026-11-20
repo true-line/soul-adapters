@@ -22,6 +22,8 @@ jobs:
           git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
           git checkout --quiet --detach FETCH_HEAD
+      - name: Check offline session probe response handling
+        run: python3 -B -m unittest discover -s packages/claude-code -p session_test.py
       - name: Check pinned Darwin arm64 package offline
         env:
           RUNNER_KIND: ${{ runner.environment }}

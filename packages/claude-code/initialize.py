@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
+import select
+import time
 import shutil
 import signal
 import subprocess
@@ -59,7 +62,50 @@ def read_frame(stream):
     return frame
 
 
-def handshake(root):
+class SessionRefused(Exception):
+    pass
+
+
+def check_session(child, cwd):
+    request = {"jsonrpc": "2.0", "id": 2, "method": "session/new",
+               "params": {"cwd": str(cwd), "mcpServers": []}}
+    child.stdin.write(json.dumps(request).encode() + b"\n")
+    child.stdin.flush()
+    # Souls ignores unrelated notifications. Its only request handler cancels
+    # every permission request; other requests receive method-not-found.
+    for _ in range(32):
+        frame = read_frame(child.stdout)
+        if frame is None:
+            raise SessionRefused("session/new: stdout ended")
+        if isinstance(frame.get("method"), str):
+            if "id" in frame and frame["id"] is not None:
+                response = {"jsonrpc": "2.0", "id": frame["id"]}
+                if frame["method"] == "session/request_permission":
+                    response["result"] = {"outcome": {"outcome": "cancelled"}}
+                else:
+                    response["error"] = {"code": -32601, "message": "method not found"}
+                child.stdin.write(json.dumps(response).encode() + b"\n")
+                child.stdin.flush()
+            continue
+        if type(frame.get("id")) is not int or frame["id"] != 2:
+            raise SessionRefused("session/new: unexpected reply")
+        if "error" in frame:
+            error = frame["error"]
+            code = error.get("code") if isinstance(error, dict) else None
+            # Vendor errors can contain host paths and arbitrary text.
+            label = str(code) if type(code) is int else "unknown"
+            detail = json.dumps(error)
+            if re.search(r"mkdir [^/]{1,3}(?:/private)?/tmp/claude(?:-[0-9]+)?(?:/|[^A-Za-z0-9_-])", detail):
+                label += " (mkdir outside member-private temp)"
+            raise SessionRefused(f"session/new: JSON-RPC refusal {label}")
+        result = frame.get("result")
+        if set(frame) != {"jsonrpc", "id", "result"} or not isinstance(result, dict) or not isinstance(result.get("sessionId"), str) or not result["sessionId"]:
+            raise SessionRefused("session/new: missing session ID")
+        return
+    raise SessionRefused("session/new: response limit exceeded")
+
+
+def handshake(root, session_mode=None):
     state = root / "state"
     state.mkdir(mode=0o700)
     env = {"PATH": "/usr/bin:/bin"}
@@ -68,25 +114,42 @@ def handshake(root):
         directory = state / name.lower()
         directory.mkdir(mode=0o700)
         env[name] = str(directory)
+    cwd = state
+    if session_mode is not None:
+        cwd = state / "work"
+        cwd.mkdir(mode=0o700)
+        env.update(TMP=env["TMPDIR"], TEMP=env["TMPDIR"], XDG_CONFIG_DIRS=env["XDG_CONFIG_HOME"],
+                   XDG_DATA_DIRS=env["XDG_DATA_HOME"])
+        if session_mode == "member-temp":
+            env["CLAUDE_CODE_TMPDIR"] = env["TMPDIR"]
     adapter = root / "claude-agent-acp"
     command = ["/usr/bin/sandbox-exec", "-D", f"ADAPTER={adapter}",
                "-D", f"CLI={root / 'claude'}", "-D", f"STATE={state}",
                "-f", str(Path(__file__).with_suffix(".sb").resolve()), str(adapter)]
-    with subprocess.Popen(command, cwd=state, env=env, start_new_session=True,
+    with subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True,
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL) as child:
+        phase = "initialize"
         def expired(*_):
-            raise TimeoutError("initialize response timed out" if not child.stdin.closed
-                               else "adapter did not exit after stdin EOF")
+            raise TimeoutError(f"{phase}: deadline exceeded")
 
         previous = signal.signal(signal.SIGALRM, expired)
+        events = select.kqueue()
         try:
+            watch = select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
+                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                  fflags=select.KQ_NOTE_EXIT)
+            events.control([watch], 0, 0)
             signal.alarm(30)
-            child.stdin.write(json.dumps(REQUEST).encode() + b"\n")
+            initialize = REQUEST
+            if session_mode is not None:
+                initialize = {**REQUEST, "params": {"protocolVersion": 1, "clientCapabilities":
+                              {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False}}}
+            child.stdin.write(json.dumps(initialize).encode() + b"\n")
             child.stdin.flush()
             reply = read_frame(child.stdout)
             if reply is None:
-                raise ValueError(f"stdout closed before initialize response (exit {child.poll()})")
+                raise ValueError("stdout closed before initialize response")
             if (set(reply) != {"id", "jsonrpc", "result"}
                     or type(reply["id"]) is not int or reply["id"] != 1):
                 raise ValueError("missing initialize response for request 1")
@@ -100,6 +163,11 @@ def handshake(root):
                     or not isinstance(result.get("authMethods"), list)):
                 raise ValueError("unexpected ACP v1 package identity or capabilities")
 
+            if session_mode is not None:
+                phase = "session/new"
+                signal.alarm(60)
+                check_session(child, cwd)
+            phase = "stdin EOF"
             child.stdin.close()
             signal.alarm(10)
             # Upstream can emit one asynchronous auth status notification after initialize.
@@ -108,9 +176,12 @@ def handshake(root):
                 if (set(extra) != {"jsonrpc", "method", "params"}
                         or extra["method"] != "_auth/status_update" or read_frame(child.stdout) is not None):
                     raise ValueError("unexpected frame after initialize")
-            if child.wait() != 0:
-                raise ValueError("adapter did not exit zero after stdin EOF")
+            # Observe exit without reaping the PID. Cleanup only signals our
+            # own process group while its leader PID is still reserved.
+            if not events.control(None, 1, 10):
+                raise TimeoutError("adapter did not exit after stdin EOF")
         finally:
+            events.close()
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous)
             # Kill the isolated process group on failure or if the probe outlives its parent.
@@ -119,8 +190,24 @@ def handshake(root):
             except ProcessLookupError:
                 pass
             except PermissionError:
-                if child.poll() is None:
-                    raise
+                # An exited leader alone no longer accepts a group signal.
+                # Require positive disappearance before reporting success.
+                pass
+            code = child.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while True:
+                snapshot = subprocess.run(["/bin/ps", "-A", "-o", "pgid=,stat="],
+                                          capture_output=True, text=True, check=True,
+                                          timeout=5, env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"})
+                group = [stat for pgid, stat in (line.split() for line in snapshot.stdout.splitlines())
+                         if pgid == str(child.pid)]
+                if not any(not stat.startswith("Z") for stat in group):
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("adapter process group did not exit")
+                time.sleep(0.05)
+        if code != 0:
+            raise ValueError("adapter did not exit zero after stdin EOF")
 
 
 def main():
