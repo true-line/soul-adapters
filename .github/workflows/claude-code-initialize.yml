@@ -1,0 +1,24 @@
+name: Claude Code ACP initialize
+
+on:
+  pull_request:
+    paths:
+      - packages/claude-code/**
+      - .github/workflows/claude-code-initialize.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  initialize:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check pinned Darwin arm64 package offline
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: python3 packages/claude-code/initialize.py
