@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from initialize import check_session, SessionRefused
+from initialize import check_eof, check_session, SessionRefused
 
 
 def child_with(*frames):
@@ -15,6 +15,20 @@ def child_with(*frames):
 
 
 class SessionProbe(unittest.TestCase):
+    def test_post_session_command_notification(self):
+        commands = {"method": "session/update", "params": {"sessionId": "mine", "update":
+                    {"sessionUpdate": "available_commands_update", "availableCommands": []}}}
+        auth = {"method": "auth/status_update", "params": {"state": {}}}
+        check_eof(child_with(commands, auth).stdout, "mine")
+        check_eof(child_with(auth, commands).stdout, "mine")
+        for frames, session_id in (([commands], "other"), ([commands], None), ([auth], None),
+                                   ([commands, commands], "mine"), ([{"id": 2, "result": {}}], "mine"),
+                                   ([{"method": "other", "params": {}}], "mine"),
+                                   ([{"method": "session/update", "params": {"sessionId": "mine", "update":
+                                      {"sessionUpdate": "agent_message_chunk", "content": {}}}}], "mine")):
+            with self.subTest(frames=frames, session_id=session_id), self.assertRaises(ValueError):
+                check_eof(child_with(*frames).stdout, session_id)
+
     def test_existing_client_semantics(self):
         child = child_with(
             {"method": "session/update", "params": {}},

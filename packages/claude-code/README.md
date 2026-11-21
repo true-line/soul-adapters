@@ -54,3 +54,19 @@ and signed-out CLI state. It uses the same ACP requests and shutdown checks as
 the regular probe. A pass confirms the package can create a local session
 before authentication or a model prompt. Use `tart stop "$guest"` on the host
 when finished. Profile qualification remains pending.
+
+To repeat the session check with Machine's two-socket policy, copy the
+[pinned Machine profile](https://github.com/true-line/agent-bot-machine/blob/e2537d299cc677a2c29a6e7719036d103048dcc2/internal/members/darwin/harness-egress.sb)
+into the disposable guest, then run:
+
+```sh
+python3 packages/claude-code/vm_session.py /path/to/claude-agent-acp-darwin-arm64.zip --machine-profile /path/to/harness-egress.sb
+```
+
+This mode verifies the profile digest and assigns a private fixture path to
+each socket. It checks signed-out session creation with direct TCP denied.
+During shutdown the adapter can still deliver authentication status and the
+new session’s available commands. The probe rejects additional responses,
+repeated notifications, and command lists for a different session. It starts
+no socket listeners and sends no model request. HQ launch approval, member
+authentication and broker traffic still require separate verification.
