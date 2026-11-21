@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from initialize import (PACKAGE, REQUEST, VERSION, check_session, private_state, read_frame,
                         unpack, verify, wait_for_process_group_exit)
@@ -46,6 +47,20 @@ def has_prompt(message, prompt):
     return message.get("role") == "user" and any(
         block.get("type") == "text" and block.get("text") == prompt for block in content_blocks(message)
     )
+
+
+def contains_turn(messages, prompt, answer):
+    for index, message in enumerate(messages):
+        if has_prompt(message, prompt):
+            text = []
+            for reply in messages[index + 1:]:
+                if reply.get("role") != "assistant":
+                    break
+                text.extend(block.get("text", "") for block in content_blocks(reply)
+                            if block.get("type") == "text")
+            if "".join(text) == answer:
+                return True
+    return False
 
 
 class ReadFixture:
@@ -121,6 +136,7 @@ class MessagesFixture(socketserver.ThreadingUnixStreamServer):
         self.policy_checks = 0
         self.error = None
         self.read = read
+        self.resume_history = None
         self.bridge = None
 
     def handle_error(self, *_):
@@ -160,8 +176,12 @@ class MessagesHandler(BaseHTTPRequestHandler):
             if fixture.read:
                 stop = fixture.read.inspect(request, fixture.prompt, exact_prompt)
             elif exact_prompt:
-                require(fixture.prompt_calls == 0 and request.get("stream") is True
-                        and request.get("model") == MODEL, "unexpected prompt Messages request")
+                require(fixture.prompt_calls == int(fixture.resume_history is not None)
+                        and request.get("stream") is True and request.get("model") == MODEL,
+                        "unexpected prompt Messages request")
+                if fixture.resume_history:
+                    require(contains_turn(messages[:-1], *fixture.resume_history),
+                            "resumed request did not include the private first turn")
                 stop = "end_turn"
             else:
                 stop = None
@@ -353,13 +373,15 @@ def observe_cli(child, _, fixture):
         if frame.get("type") == "result":
             result = frame
     require(tuple(chunks) == fixture.chunks, "unexpected CLI text deltas")
+    current_calls = fixture.prompt_calls - int(fixture.resume_history is not None)
     require(result.get("is_error") is False and result.get("result") == "".join(fixture.chunks)
-            and all(result["usage"][key] == value * fixture.prompt_calls for key, value in USAGE.items()),
+            and all(result["usage"][key] == value * current_calls for key, value in USAGE.items()),
             "CLI did not finish with the fixture text and usage")
     if fixture.read:
         require(tool_calls == 1 and stop_reasons == ["tool_use", "end_turn"], "unexpected CLI tool or stop reasons")
         fixture.read.shape.update(terminal_end_turn=True, usage_summed=True,
                                   model_usage_present=bool(result.get("modelUsage")))
+    return result.get("session_id")
 
 
 def expired(*_):
@@ -377,7 +399,7 @@ def run_client(command, cwd, env, stdin, observe, fixture):
                                           flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
                                           fflags=select.KQ_NOTE_EXIT)], 0, 0)
             signal.alarm(45)
-            observe(child, cwd, fixture)
+            observation = observe(child, cwd, fixture)
             # Observe exit without reaping the PID before process group cleanup.
             require(events.control(None, 1, 10), "client did not exit")
         finally:
@@ -391,9 +413,48 @@ def run_client(command, cwd, env, stdin, observe, fixture):
             status = child.wait(timeout=5)
             wait_for_process_group_exit(child.pid)
         require(status == 0, "client did not exit zero")
+        return observation
 
 
-def trial(root, profile, mode, read_fixture, hq_source=None):
+def check_transcript(home, session):
+    project_root = home / ".claude/projects"
+    paths = list(project_root.glob(f"*/{session}.jsonl"))
+    require(len(paths) == 1 and not paths[0].is_symlink() and paths[0].is_file()
+            and paths[0].resolve().is_relative_to(home.resolve()),
+            "missing native transcript in the assigned member home")
+    with paths[0].open("rb") as source:
+        transcript = source.read(512 * 1024 + 1)
+    require(0 < len(transcript) <= 512 * 1024, "unexpected native transcript size")
+    entries = [json.loads(line) for line in transcript.splitlines()]
+    return [entry["message"] for entry in entries
+            if entry.get("sessionId") == session and entry.get("type") in ("user", "assistant")]
+
+
+def resume_cli(command, cwd, env, fixture):
+    def invoke(*arguments):
+        return run_client(command + ["--print", fixture.prompt, *arguments], cwd, env,
+                          subprocess.DEVNULL, observe_cli, fixture)
+
+    home = Path(env["HOME"])
+    require(not (home / ".claude/projects").exists(), "expected a fresh member home")
+    session = invoke()
+    require(isinstance(session, str) and str(UUID(session)) == session,
+            "CLI did not return a native session ID")
+    first = (fixture.prompt, "".join(fixture.chunks))
+    require(contains_turn(check_transcript(home, session), *first),
+            "native transcript does not contain the first turn")
+
+    with fixture.lock:
+        fixture.resume_history = first
+        fixture.prompt = "Return the resumed fixture response for " + secrets.token_hex(12)
+        fixture.chunks = ("resumed-" + secrets.token_hex(12), "-complete")
+        fixture.first_seen.clear()
+    require(invoke("--resume", session) == session, "CLI did not resume the same session")
+    require(contains_turn(check_transcript(home, session), fixture.prompt, "".join(fixture.chunks)),
+            "native transcript does not contain the resumed turn")
+
+
+def trial(root, profile, mode, read_fixture, hq_source=None, resume=False):
     state = root / mode
     state.mkdir()
     _, cwd, env = private_state(state, "member-temp")
@@ -412,12 +473,15 @@ def trial(root, profile, mode, read_fixture, hq_source=None):
         server.start()
         try:
             if mode == "cli":
-                command = [str(root / "claude"), "--print", fixture.prompt, "--model", MODEL,
-                           "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-                           "--no-session-persistence", "--tools", "Read" if read_fixture else ""]
-                if read_fixture:
-                    command += ["--settings", json.dumps(fixture.read.settings)]
-                run_client(policy + command, cwd, env, subprocess.DEVNULL, observe_cli, fixture)
+                command = [str(root / "claude"), "--model", MODEL, "--output-format", "stream-json",
+                           "--verbose", "--include-partial-messages", "--tools", "Read" if read_fixture else ""]
+                if resume:
+                    resume_cli(policy + command, cwd, env, fixture)
+                else:
+                    command += ["--print", fixture.prompt, "--no-session-persistence"]
+                    if read_fixture:
+                        command += ["--settings", json.dumps(fixture.read.settings)]
+                    run_client(policy + command, cwd, env, subprocess.DEVNULL, observe_cli, fixture)
             else:
                 run_client(policy + [str(root / "claude-agent-acp")], cwd, env, subprocess.PIPE,
                            observe_acp, fixture)
@@ -432,12 +496,14 @@ def trial(root, profile, mode, read_fixture, hq_source=None):
                 fixture.bridge.close()
         if fixture.error is not None:
             raise fixture.error
-        require(fixture.prompt_calls == (2 if read_fixture else 1) and fixture.first_seen.is_set(),
+        require(fixture.prompt_calls == (2 if read_fixture or resume else 1) and fixture.first_seen.is_set(),
                 "the fixture did not complete the expected prompt requests")
         print(json.dumps({"mode": mode, "model": MODEL, "prompt_messages": fixture.prompt_calls,
                           "ancillary_messages": fixture.ancillary_messages, "policy_checks": fixture.policy_checks,
                           "incremental_deltas": len(fixture.chunks), "usage_observed": True,
                           **(fixture.read.shape if read_fixture else {}),
+                          **({"native_transcript_in_member_home": True, "resumed_in_new_process": True,
+                              "resumed_request_carried_history": True} if resume else {}),
                           **({"bound_hq_fixture": True, "modeled_turn_equal": True,
                               "completed_zero_cost_operations": 2} if hq_source else {})}))
 
@@ -446,7 +512,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path, help="pinned v0.109.0 Darwin arm64 release zip")
     parser.add_argument("machine_profile", type=Path, help="pinned Machine harness-egress.sb")
-    parser.add_argument("--read-fixture", action="store_true", help="exercise one local Read and follow-up")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--read-fixture", action="store_true", help="exercise one local Read and follow-up")
+    mode.add_argument("--resume-fixture", action="store_true", help="persist and resume a native CLI session")
     parser.add_argument("--hq-source", type=Path, help="pinned HQ draft checkout for the optional bound bridge")
     args = parser.parse_args()
     require_guest()
@@ -466,9 +534,9 @@ def main():
         profile = root / "harness-egress.sb"
         shutil.copyfile(args.machine_profile, profile)
         verify(profile, PROFILE_SHA256)
-        for mode in ("cli", "acp"):
+        for mode in (("cli",) if args.resume_fixture else ("cli", "acp")):
             try:
-                trial(root, profile, mode, args.read_fixture, args.hq_source)
+                trial(root, profile, mode, args.read_fixture, args.hq_source, args.resume_fixture)
             except (FixtureError, BridgeError) as error:
                 raise SystemExit(f"{mode}: {error}") from None
             except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
