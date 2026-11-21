@@ -143,3 +143,12 @@ This check covers stock Messages transport and ACP prompt delivery. The fixture
 doesn't exercise HQ's broker protocol, member binding, provider authorization,
 catalog discovery or production accounting. ACP's separate `providers/set`
 catalog client is outside this native-mode check.
+
+Add `--read-fixture` to exercise a tool round trip in each stock client. The
+fixture creates one private text file and configures only the built-in `Read`
+tool, with consent for that exact file. The first synthetic Messages response
+requests that read. The next request must carry the assistant tool call, the
+matching user tool-result ID and the random file contents. Only then does the
+server send the incremental text reply. The receipt records the observed tool,
+transcript and usage shapes as counts and booleans. Keep this optional check
+inside the same disposable guest.
