@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from initialize import (PACKAGE, REQUEST, VERSION, check_session, private_state, read_frame,
                         unpack, verify, wait_for_process_group_exit)
 from vm_session import PROFILE_SHA256, require_guest
+from hq_read_bridge import BridgeError, ReadBridge
 
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -120,6 +121,7 @@ class MessagesFixture(socketserver.ThreadingUnixStreamServer):
         self.policy_checks = 0
         self.error = None
         self.read = read
+        self.bridge = None
 
     def handle_error(self, *_):
         error = sys.exc_info()[1]
@@ -171,6 +173,8 @@ class MessagesHandler(BaseHTTPRequestHandler):
             # Auxiliary requests get neither the canary output nor prompt usage.
             self.send_error(422)
             return
+        if fixture.bridge:
+            fixture.bridge.begin(request)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -184,21 +188,70 @@ class MessagesHandler(BaseHTTPRequestHandler):
                                         "role": "assistant", "model": MODEL, "content": [], "stop_reason": None,
                                         "stop_sequence": None,
                                         "usage": {"input_tokens": USAGE["input_tokens"], "output_tokens": 0}})
-        if stop == "tool_use":
-            event("content_block_start", index=0, content_block={
-                "type": "tool_use", "id": fixture.read.tool_id, "name": "Read", "input": {},
-            })
-            event("content_block_delta", index=0, delta={
-                "type": "input_json_delta", "partial_json": json.dumps(fixture.read.tool_input),
-            })
+        if fixture.bridge:
+            tool_id = None
+            arguments = ""
+            tool_frames = []
+            chunks = []
+            while True:
+                frame = fixture.bridge.receive()
+                if "result" in frame:
+                    terminal = frame["result"]
+                    require(terminal == {"stop_reason": stop, "usage": USAGE}, "unexpected HQ terminal")
+                    break
+                chunk = frame["event"]
+                kind = chunk.get("type")
+                if kind == "response.tool_call.start":
+                    require(stop == "tool_use" and tool_id is None and chunk["call_id"] == fixture.read.tool_id
+                            and chunk["name"] == "Read", "unexpected HQ tool start")
+                    tool_id = chunk["call_id"]
+                    tool_frames.append(chunk)
+                elif kind == "response.tool_call.arguments.delta":
+                    require(tool_id == chunk["call_id"], "unexpected HQ tool arguments")
+                    arguments += chunk["delta"]
+                    tool_frames.append(chunk)
+                elif kind == "response.output_text.delta":
+                    require(stop == "end_turn" and len(chunks) < 2 and isinstance(chunk["delta"], str)
+                            and chunk["delta"], "unexpected HQ text chunk")
+                    chunks.append(chunk["delta"])
+                    fixture.chunks = tuple(chunks)
+                    if len(chunks) == 1:
+                        event("content_block_start", index=0, content_block={"type": "text", "text": ""})
+                    event("content_block_delta", index=0, delta={"type": "text_delta", "text": chunk["delta"]})
+                    if len(chunks) == 1:
+                        require(fixture.first_seen.wait(8), "first HQ delta was buffered")
+                        fixture.bridge.continue_after_observation()
+                else:
+                    raise FixtureError("unexpected HQ stream event")
+            if stop == "tool_use":
+                require(tool_id == fixture.read.tool_id and json.loads(arguments) == fixture.read.tool_input,
+                        "HQ tool input did not match the fixture")
+                start = tool_frames[0]
+                event("content_block_start", index=0, content_block={"type": "tool_use", "id": start["call_id"],
+                      "name": start["name"], "input": {}})
+                for fragment in tool_frames[1:]:
+                    event("content_block_delta", index=0, delta={"type": "input_json_delta", "partial_json": fragment["delta"]})
+            else:
+                require(len(chunks) == 2, "HQ did not deliver two text chunks")
+            usage = terminal["usage"]
         else:
-            event("content_block_start", index=0, content_block={"type": "text", "text": ""})
-            for index, chunk in enumerate(fixture.chunks):
-                event("content_block_delta", index=0, delta={"type": "text_delta", "text": chunk})
-                if index == 0:
-                    require(fixture.first_seen.wait(8), "first delta was buffered")
+            if stop == "tool_use":
+                event("content_block_start", index=0, content_block={
+                    "type": "tool_use", "id": fixture.read.tool_id, "name": "Read", "input": {},
+                })
+                event("content_block_delta", index=0, delta={
+                    "type": "input_json_delta", "partial_json": json.dumps(fixture.read.tool_input),
+                })
+            else:
+                event("content_block_start", index=0, content_block={"type": "text", "text": ""})
+                for index, chunk in enumerate(fixture.chunks):
+                    event("content_block_delta", index=0, delta={"type": "text_delta", "text": chunk})
+                    if index == 0:
+                        require(fixture.first_seen.wait(8), "first delta was buffered")
+            usage = USAGE
         event("content_block_stop", index=0)
-        event("message_delta", delta={"stop_reason": stop, "stop_sequence": None}, usage=USAGE)
+        event("message_delta", delta={"stop_reason": terminal["stop_reason"] if fixture.bridge else stop,
+                                      "stop_sequence": None}, usage=usage)
         event("message_stop")
 
 
@@ -340,7 +393,7 @@ def run_client(command, cwd, env, stdin, observe, fixture):
         require(status == 0, "client did not exit zero")
 
 
-def trial(root, profile, mode, read_fixture):
+def trial(root, profile, mode, read_fixture, hq_source=None):
     state = root / mode
     state.mkdir()
     _, cwd, env = private_state(state, "member-temp")
@@ -351,6 +404,10 @@ def trial(root, profile, mode, read_fixture):
     policy = ["/usr/bin/sandbox-exec", "-D", f"BROKER_SOCKET={broker}",
               "-D", f"MEMBER_SOCKET={member}", "-f", str(profile)]
     with MessagesFixture(broker, ReadFixture(cwd) if read_fixture else None) as fixture:
+        if hq_source:
+            node = shutil.which("node")
+            require(node is not None, "Node.js is required for the HQ fixture")
+            fixture.bridge = ReadBridge(node, hq_source, fixture.read)
         server = threading.Thread(target=fixture.serve_forever, daemon=True)
         server.start()
         try:
@@ -371,6 +428,8 @@ def trial(root, profile, mode, read_fixture):
         finally:
             fixture.shutdown()
             server.join(timeout=5)
+            if fixture.bridge:
+                fixture.bridge.close()
         if fixture.error is not None:
             raise fixture.error
         require(fixture.prompt_calls == (2 if read_fixture else 1) and fixture.first_seen.is_set(),
@@ -378,7 +437,9 @@ def trial(root, profile, mode, read_fixture):
         print(json.dumps({"mode": mode, "model": MODEL, "prompt_messages": fixture.prompt_calls,
                           "ancillary_messages": fixture.ancillary_messages, "policy_checks": fixture.policy_checks,
                           "incremental_deltas": len(fixture.chunks), "usage_observed": True,
-                          **(fixture.read.shape if read_fixture else {})}))
+                          **(fixture.read.shape if read_fixture else {}),
+                          **({"bound_hq_fixture": True, "modeled_turn_equal": True,
+                              "completed_zero_cost_operations": 2} if hq_source else {})}))
 
 
 def main():
@@ -386,8 +447,18 @@ def main():
     parser.add_argument("archive", type=Path, help="pinned v0.109.0 Darwin arm64 release zip")
     parser.add_argument("machine_profile", type=Path, help="pinned Machine harness-egress.sb")
     parser.add_argument("--read-fixture", action="store_true", help="exercise one local Read and follow-up")
+    parser.add_argument("--hq-source", type=Path, help="pinned HQ draft checkout for the optional bound bridge")
     args = parser.parse_args()
     require_guest()
+    if args.hq_source and not args.read_fixture:
+        parser.error("--hq-source requires --read-fixture")
+    if args.hq_source:
+        hq = args.hq_source.resolve()
+        revision = subprocess.check_output(["git", "-C", str(hq), "rev-parse", "HEAD"], text=True, timeout=10).strip()
+        changed = subprocess.check_output(["git", "-C", str(hq), "status", "--porcelain", "--untracked-files=no"], text=True, timeout=10)
+        if revision != "b3c4a6aadfe20abcac547ba17cd4538d3b00a68c" or changed:
+            raise SystemExit("HQ fixture checkout must be the clean reviewed draft revision")
+        args.hq_source = hq
     os.umask(0o077)
     with tempfile.TemporaryDirectory(prefix="claude-uds-", dir="/private/tmp") as temp:
         root = Path(temp)
@@ -397,8 +468,8 @@ def main():
         verify(profile, PROFILE_SHA256)
         for mode in ("cli", "acp"):
             try:
-                trial(root, profile, mode, args.read_fixture)
-            except FixtureError as error:
+                trial(root, profile, mode, args.read_fixture, args.hq_source)
+            except (FixtureError, BridgeError) as error:
                 raise SystemExit(f"{mode}: {error}") from None
             except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
                 raise SystemExit(f"{mode}: invalid client or fixture output") from None
