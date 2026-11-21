@@ -51,7 +51,9 @@ The check verifies the profile hash, installs the locked packages offline,
 and verifies that direct loopback TCP is denied. For each ACP wire version,
 the default provider must refuse a signed-out session. A local provider
 configured in Codex and an explicitly selected ACP custom gateway must each
-return a session ID and exit cleanly on EOF. Both use a loopback URL and fresh private
+return a session ID and exit cleanly on EOF. For the explicit ACP gateway,
+`providers/list` must report the configured fixture URL in the OpenAI provider slot.
+For the TOML provider, the check observes only session creation. Both use a loopback URL and fresh private
 state without credentials. The check starts no provider or socket
 listener and sends no model prompt. Stop the clone afterward.
 
