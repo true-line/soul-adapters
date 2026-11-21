@@ -16,7 +16,8 @@ export function buildStatement(qualificationBytes, preflight, sourceCommit, expi
   if (!Buffer.isBuffer(qualificationBytes) || qualificationBytes.length === 0 ||
       qualificationBytes.length > 1 << 20 || !COMMIT.test(sourceCommit) ||
       !preflight || preflight.qualification_sha256 !== digest(qualificationBytes) ||
-      !Array.isArray(preflight.reports) || preflight.reports.length !== 2) {
+      preflight.protected_profile !== 'managed-protected' ||
+      preflight.cooperative_profile !== 'managed-cooperative') {
     throw new Error('release inputs do not match verified qualification bytes');
   }
   const expiry = new Date(expiresAt);
@@ -32,17 +33,9 @@ export function buildStatement(qualificationBytes, preflight, sourceCommit, expi
   if (qualification.profile_in_force !== 'managed-protected') {
     throw new Error('qualification.json does not name the protected profile');
   }
-  const byProfile = new Map();
-  for (const report of preflight.reports) {
-    if (!report || !['managed-protected', 'managed-cooperative'].includes(report.profile) ||
-        !SHA.test(report.sha256) || byProfile.has(report.profile)) {
-      throw new Error('preflight must contain one verified report per profile');
-    }
-    byProfile.set(report.profile, report.sha256);
-  }
-  const protectedSHA = byProfile.get('managed-protected');
-  const cooperativeSHA = byProfile.get('managed-cooperative');
-  if (!protectedSHA || !cooperativeSHA || protectedSHA === cooperativeSHA ||
+  const protectedSHA = preflight.protected_report_sha256;
+  const cooperativeSHA = preflight.cooperative_report_sha256;
+  if (!SHA.test(protectedSHA) || !SHA.test(cooperativeSHA) || protectedSHA === cooperativeSHA ||
       qualification.conformance?.report?.sha256 !== protectedSHA) {
     throw new Error('verified protected report does not match qualification.json');
   }

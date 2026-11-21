@@ -12,10 +12,10 @@ const qualification = Buffer.from(JSON.stringify({
 }));
 const preflight = {
   qualification_sha256: sha(qualification),
-  reports: [
-    { profile: 'managed-protected', sha256: protectedSHA },
-    { profile: 'managed-cooperative', sha256: cooperativeSHA },
-  ],
+  protected_profile: 'managed-protected',
+  protected_report_sha256: protectedSHA,
+  cooperative_profile: 'managed-cooperative',
+  cooperative_report_sha256: cooperativeSHA,
 };
 const commit = 'c'.repeat(40);
 const now = new Date('2026-11-21T00:00:00.000Z');
@@ -32,7 +32,7 @@ test('a changed qualification or unchecked protected report cannot be stated', (
   assert.throws(() => buildStatement(Buffer.concat([qualification, Buffer.from(' ')]), preflight, commit, expiry, now));
   assert.throws(() => buildStatement(qualification, {
     ...preflight,
-    reports: [{ profile: 'managed-protected', sha256: cooperativeSHA }, preflight.reports[1]],
+    protected_report_sha256: cooperativeSHA,
   }, commit, expiry, now));
 });
 
