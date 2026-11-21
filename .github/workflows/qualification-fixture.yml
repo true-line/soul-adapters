@@ -115,8 +115,8 @@ jobs:
           const fs = require('node:fs');
           const dir = process.argv[2];
           const bundle = JSON.parse(fs.readFileSync(dir + '/bundle.json'));
-          const payload = bundle.dsseEnvelope.payload;
-          bundle.dsseEnvelope.payload = (payload[0] === 'A' ? 'B' : 'A') + payload.slice(1);
+          const signature = bundle.dsseEnvelope.signatures[0].sig;
+          bundle.dsseEnvelope.signatures[0].sig = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
           fs.writeFileSync(dir + '/bundle.altered.json', JSON.stringify(bundle));
           NODE
           altered_sha="sha256:$(sha256sum "$RUNNER_TEMP/fixture/bundle.altered.json" | cut -d ' ' -f 1)"
