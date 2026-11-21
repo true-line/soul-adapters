@@ -23,6 +23,29 @@ class ShutdownTest(unittest.TestCase):
             self.check_failure(root, """print('{"jsonrpc":"2.0","id":2,"result":{}}')""",
                                "unexpected output after stdin EOF")
 
+    def test_observes_only_the_expected_live_executable(self):
+        program = """
+import subprocess, sys
+child = subprocess.Popen(['/bin/sleep', '60'])
+try:
+    print('ready', flush=True)
+    sys.stdin.read()
+finally:
+    child.terminate()
+    child.wait(timeout=5)
+"""
+
+        def observe(child, _wire, _state):
+            self.assertEqual(child.stdout.readline(), b"ready\n")
+            with self.assertRaisesRegex(ValueError, "pinned executable path"):
+                session.observe_child_executable(child.pid, Path("/usr/bin/true"))
+            return session.observe_child_executable(child.pid, Path("/bin/sleep"))
+
+        with tempfile.TemporaryDirectory() as root:
+            result = session.session([sys.executable, "-IS", "-c", program],
+                                     {"PATH": "/usr/bin:/bin"}, root, 1, observe)
+        self.assertEqual(result, {"native_executable": "/bin/sleep", "child_depth": 1})
+
     def test_live_child_after_clean_exit(self):
         with tempfile.TemporaryDirectory() as root:
             self.check_failure(root, """

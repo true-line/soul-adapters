@@ -1,5 +1,6 @@
 """Signed-out ACP session check for Apple Silicon. Run with a standalone Node distribution."""
 
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,43 @@ def live_sidecars(leader):
                for group, pid, state in (row.split() for row in snapshot.splitlines()))
 
 
+def observe_child_executable(leader, native, wrapper_node=None):
+    """Check only live children in the launched fixture's own process group."""
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    child_pids = libproc.proc_listchildpids
+    child_pids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    executable_path = libproc.proc_pidpath
+    executable_path.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    pids = (ctypes.c_int * 16)()
+    # PROC_PIDPATHINFO_MAXSIZE from Darwin's libproc.h.
+    path = ctypes.create_string_buffer(4096)
+
+    def children(parent):
+        count = child_pids(parent, pids, ctypes.sizeof(pids))
+        if not 0 <= count < len(pids):
+            raise ValueError("could not observe bounded fixture descendants")
+        paths = {}
+        for pid in pids[:count]:
+            try:
+                if pid > 0 and os.getpgid(pid) == leader and executable_path(pid, path, len(path)) > 0:
+                    paths[pid] = os.fsdecode(path.value)
+            except ProcessLookupError:
+                continue
+        return paths
+
+    direct = children(leader)
+    matches = [1 for path in direct.values() if path == str(native)]
+    # Current Node execs the native binary in the wrapper process. Older
+    # Node releases can retain the wrapper and spawn one additional child.
+    if wrapper_node is not None:
+        for pid, path in direct.items():
+            if path == str(wrapper_node):
+                matches.extend(2 for path in children(pid).values() if path == str(native))
+    if len(matches) != 1:
+        raise ValueError("expected one live child with the pinned executable path")
+    return {"native_executable": str(native), "child_depth": matches[0]}
+
+
 def check_signed_out(child, wire, state):
     initialize(child, wire)
     reply = exchange(child, 2, "session/new", {"cwd": str(state), "mcpServers": []})
@@ -106,7 +144,7 @@ def session(command, env, state, wire, handshake=check_signed_out):
                                   fflags=select.KQ_NOTE_EXIT)
             events.control([watch], 0, 0)
             signal.alarm(45)
-            handshake(child, wire, state)
+            observation = handshake(child, wire, state)
             child.stdin.close()
             signal.alarm(10)
             final = read_frame(child.stdout)
@@ -133,6 +171,7 @@ def session(command, env, state, wire, handshake=check_signed_out):
             code = child.wait(timeout=5)
         if code != 0:
             raise ValueError("adapter exited unsuccessfully after EOF")
+        return observation
 
 
 def private_env(state, cli):
@@ -181,10 +220,15 @@ def check(packages, state, node, wire, *, package_fallback=False):
                                  capture_output=True, timeout=15)
         if control.returncode == 0:
             raise ValueError("sandbox allowed the other locked Codex CLI")
-    session(sandbox + [str(node), str(adapter)], env, state, wire)
+    def handshake(child, wire, state):
+        check_signed_out(child, wire, state)
+        return observe_child_executable(child.pid, cli, node if package_fallback else None)
+
+    observation = session(sandbox + [str(node), str(adapter)], env, state, wire, handshake)
     selection = "package fallback" if package_fallback else "explicit CODEX_PATH"
     print(f"PASS codex-acp 2.8.0 / codex-cli {expected_version} ({selection}): ACP v{wire} advertised api-key and chat-gpt, "
-          "session/new refused (-32000 Authentication required), EOF exit 0")
+          "session/new refused (-32000 Authentication required), native child path observed, EOF exit 0")
+    return observation
 
 
 def install_packages(root, node, npm, cache=None):
