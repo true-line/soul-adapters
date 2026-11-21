@@ -113,3 +113,33 @@ It compares the public member CLI's epoch and lease generation to Souls'
 admission status and requires a ready member. This exercises one cooperative
 account and shared broker. Dedicated-account launch approval and a credentialed
 provider turn remain separate gates.
+
+### Stream a synthetic Messages turn over the assigned Unix socket
+
+Use the same fresh, credential-free Apple Silicon macOS guest and standard test
+account. Copy the pinned Claude release archive, this package directory and the
+[pinned Machine profile](https://github.com/true-line/agent-bot-machine/blob/e2537d299cc677a2c29a6e7719036d103048dcc2/internal/members/darwin/harness-egress.sb)
+into the clone. In that account run:
+
+```sh
+python3 packages/claude-code/unix_messages.py claude-agent-acp-darwin-arm64.zip harness-egress.sb
+```
+
+This verifies both stock executables, then runs Claude Code directly and through
+ACP v1 in native inherited-environment mode. Each gets a fresh private home and
+the same pinned two-socket profile. A synthetic HTTP Messages server listens on
+the test broker socket. The member socket path is unused. The child receives
+`ANTHROPIC_UNIX_SOCKET`, an inert base URL and the literal `ssh-placeholder` as
+its only credential-shaped input. [Anthropic documents Unix socket support for local proxies](https://github.com/anthropics/claude-code/releases/tag/v2.1.271).
+
+Each pass requires one streamed `POST /v1/messages` carrying the exact fixture
+prompt, the expected model and placeholder header, two distinct response
+deltas, and clean exit. The server waits for the client to observe the first
+delta before sending the second. The receipt counts unrelated Messages requests
+and policy checks without printing bodies or header values. The fixture starts
+no TCP listener. Use `tart stop "$guest"` on the host when finished.
+
+This check covers stock Messages transport and ACP prompt delivery. The fixture
+doesn't exercise HQ's broker protocol, member binding, provider authorization,
+catalog discovery or production accounting. ACP's separate `providers/set`
+catalog client is outside this native-mode check.
