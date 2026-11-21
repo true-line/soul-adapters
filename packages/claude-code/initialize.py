@@ -258,7 +258,9 @@ def main():
                         "--max-time", "180", "--output", str(archive), f"{RELEASE}/{ASSET}"], check=True)
         unpack(archive, root)
         handshake(root)
-    print(f"ACP v1 initialize passed for {PACKAGE} {VERSION}; stdin EOF exited zero")
+        with tempfile.TemporaryDirectory(dir=root) as session_root:
+            handshake(Path(session_root), session_mode="member-temp", bundle=root)
+    print(f"ACP v1 initialize, signed-out session/new and clean EOF passed for {PACKAGE} {VERSION}")
 
 
 if __name__ == "__main__":
