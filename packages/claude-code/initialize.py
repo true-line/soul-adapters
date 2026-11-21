@@ -101,8 +101,32 @@ def check_session(child, cwd):
         result = frame.get("result")
         if set(frame) != {"jsonrpc", "id", "result"} or not isinstance(result, dict) or not isinstance(result.get("sessionId"), str) or not result["sessionId"]:
             raise SessionRefused("session/new: missing session ID")
-        return
+        return result["sessionId"]
     raise SessionRefused("session/new: response limit exceeded")
+
+
+def check_eof(stream, session_id):
+    # Session setup schedules its command list after returning the session ID.
+    # Authentication status is also delivered asynchronously by the adapter.
+    seen = set()
+    while (frame := read_frame(stream)) is not None:
+        if set(frame) != {"jsonrpc", "method", "params"}:
+            raise ValueError("unexpected frame at EOF")
+        method = frame["method"]
+        params = frame["params"]
+        if method == "session/update" and session_id is not None and isinstance(params, dict):
+            update = params.get("update")
+            allowed = (set(params) == {"sessionId", "update"} and params["sessionId"] == session_id
+                       and isinstance(update, dict) and set(update) == {"sessionUpdate", "availableCommands"}
+                       and update["sessionUpdate"] == "available_commands_update"
+                       and isinstance(update["availableCommands"], list))
+        elif method == "auth/status_update" and session_id is not None:
+            allowed = isinstance(params, dict) and set(params) == {"state"}
+        else:
+            allowed = method == "_auth/status_update"
+        if not allowed or method in seen:
+            raise ValueError("unexpected notification at EOF")
+        seen.add(method)
 
 
 def private_state(root, session_mode):
@@ -172,19 +196,15 @@ def check_acp(command, cwd, env, session_mode):
                     or not isinstance(result.get("authMethods"), list)):
                 raise ValueError("unexpected ACP v1 package identity or capabilities")
 
+            session_id = None
             if session_mode is not None:
                 phase = "session/new"
                 signal.alarm(60)
-                check_session(child, cwd)
+                session_id = check_session(child, cwd)
             phase = "stdin EOF"
             child.stdin.close()
             signal.alarm(10)
-            # Upstream can emit one asynchronous auth status notification after initialize.
-            extra = read_frame(child.stdout)
-            if extra is not None:
-                if (set(extra) != {"jsonrpc", "method", "params"}
-                        or extra["method"] != "_auth/status_update" or read_frame(child.stdout) is not None):
-                    raise ValueError("unexpected frame after initialize")
+            check_eof(child.stdout, session_id)
             # Observe exit without reaping the PID. Cleanup only signals our
             # own process group while its leader PID is still reserved.
             if not events.control(None, 1, 10):
