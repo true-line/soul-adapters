@@ -47,6 +47,15 @@ test('a changed qualification or unchecked protected report cannot be stated', (
   }, policy, commit, expiry, now));
 });
 
+
+test('a different owner-pinned release identity is refused', () => {
+  const decoded = JSON.parse(Buffer.from(policy.policy_base64url, 'base64url').toString('utf8'));
+  decoded.release_workflow.certificate_identity =
+    'https://github.com/true-line/soul-adapters/.github/workflows/other.yml@refs/heads/main';
+  const wrong = { policy_base64url: Buffer.from(JSON.stringify(decoded)).toString('base64url') };
+  assert.throws(() => buildStatement(qualification, preflight, wrong, commit, expiry, now));
+});
+
 test('source and expiry must be pinned at release', () => {
   assert.throws(() => buildStatement(qualification, preflight, policy, 'main', expiry, now));
   assert.throws(() => buildStatement(qualification, preflight, policy, commit, now.toISOString(), now));

@@ -2,6 +2,15 @@
 
 An adapter qualifies per enforcement profile on a named host, adapter version, and harness binary digest. Qualification is a `soul-conformance` run, not a self-declaration. The evidence payload in [soul-contracts PR #46](https://github.com/true-line/soul-contracts/pull/46) is still a draft: a shape-valid payload does not qualify an adapter or authorize a launch.
 
+
+## Release producer
+
+The designated workflow is [release-qualification.yml](../.github/workflows/release-qualification.yml). It can be dispatched only from `main` with an exact `soul-conformance` evidence commit, a directory under `reports/`, and a UTC qualification expiry. That directory supplies `qualification.json`, the protected and cooperative host signature envelopes, and the owner-signed policy envelope. The workflow fetches the exact evidence commit as data, builds Machine's `mm-qualification-preflight` from its reviewed pinned commit, and takes the owner root and key ID only from that Machine source's `trust/qualification/` files. Missing trust files fail before signing.
+
+After Machine verifies the policy and both host signatures, the producer binds its verified report digests and the exact qualification bytes to an in-toto Statement. It compares the owner-pinned source commit, workflow path, OIDC issuer, certificate identity, and Sigstore trusted-root digest with this run, then uses keyless Cosign to produce a Sigstore v0.3 bundle. The workflow retains the bundle, Statement, policy, reports, trusted root, Machine preflight output, and raw-file SHA-256 list as one Actions artifact for independent offline verification. A workflow artifact alone is not a protected launch decision.
+
+The production owner root, key ID, initial signed policy, and physical designated-host reports have not been supplied. The workflow remains unable to sign a production qualification until those inputs exist and its pinned Machine commit includes the reviewed trust files. Shape-valid synthetic fixtures and locally generated signatures do not satisfy this gate. The [platform trust decision](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0102-protected-adapter-qualification.md) owns the trust rule; this section describes this repository's producer.
+
 ## Authority for a protected claim
 
 A designated qualification host signs the independent runner’s measured results.
