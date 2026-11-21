@@ -1,6 +1,31 @@
 # Adapter qualification
 
-An adapter qualifies per enforcement profile on a named host, adapter version, and harness binary digest. Qualification is a `soul-conformance` run, not a self-declaration.
+An adapter qualifies per enforcement profile on a named host, adapter version, and harness binary digest. Qualification is a `soul-conformance` run, not a self-declaration. The evidence payload in [soul-contracts PR #46](https://github.com/true-line/soul-contracts/pull/46) is still a draft: a shape-valid payload does not qualify an adapter or authorize a launch.
+
+## Authority for a protected claim
+
+A designated qualification host signs the independent runner’s measured results.
+On macOS the signing operation runs under admin-side Machine/keyd. Ordinary Mac
+enrollment grants no authority to qualify releases. The designated release
+workflow in `true-line/soul-adapters` verifies the host-signed passing evidence
+and signs a qualification attestation. Its subject is the SHA-256 of the exact
+`qualification.json` bytes. Owner-controlled signed policy identifies the
+authorized test hosts, release source and workflow. [Owner decision](https://github.com/true-line/agent-bot-platform/discussions/102#discussioncomment-19798348).
+
+The evidence covers the adapter package digest, executable path and digest,
+ordered arguments, complete fixed code inputs and their digests, selected
+harness binary path and digest, actual host and profile, suite revision and
+results. The protected manifest entry references the signed attestation.
+Publication can precede installation. Each operator approves the exact local
+launch-rule installation separately.
+
+Machine verifies the delivered evidence and trust policy offline. HQ may fetch
+and deliver signed policy updates. Machine rejects older policy revisions and
+refuses a protected launch when inputs change, qualification expires, revocation
+information is stale, evidence or its signer is unknown or revoked, or the
+required pairing is unavailable. Cooperative execution requires an explicit
+choice. The maximum age of revocation information remains open.
+[Platform decision record](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0102-protected-adapter-qualification.md).
 
 Required for **managed protected**:
 - All protected egress goes through the broker: inference and service calls cannot bypass the proxy (T03).
@@ -13,4 +38,4 @@ Required for **managed protected**:
 
 Required for **managed cooperative**: the same list, with items that depend on host isolation reported as unenforced rather than claimed.
 
-Record: `qualification.json` per package with adapter id, version, harness digest, host profile, profile qualified, renderable classes, cost-bound support, suite revision, date, and signature.
+The proposed evidence record is per measured run and includes adapter identity and package digest, executable path and digest, ordered arguments, fixed code inputs, harness path and digest, actual host profile, conformance suite revision and report, observations, and dated references. Follow the draft contract; do not infer that its current shape or a nonempty manifest list is sufficient.
