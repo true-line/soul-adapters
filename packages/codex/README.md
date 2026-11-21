@@ -127,3 +127,14 @@ messages, and completes a second turn. It checks that a nonempty native
 rollout exists in the configured private state. This is a cooperative native
 adapter check; it does not demonstrate Soul-managed environment isolation,
 Soul front-door session reload, or application durable handoff.
+
+Run `python3 check/native_resume.py --interrupt` to insert an interrupted
+turn before reloading. The synthetic loopback provider holds its text stream
+open after one delta. The ACP client sends the standard `session/cancel`
+notification after receiving that delta and requires the original prompt to
+return `cancelled`. It checks that the provider connection closes before the
+adapter exits. A fresh adapter then loads the same member's native session,
+replays the earlier completed turn, and finishes a distinct prompt whose
+model request carries that turn. This measures adapter cancellation and
+native conversation continuity at a text-only boundary. Application durable
+handoff and real external effects need separate qualification.

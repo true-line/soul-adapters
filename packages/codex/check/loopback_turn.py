@@ -20,8 +20,8 @@ ANSWER = "Fixture response complete."
 class FixtureServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
-    def __init__(self):
-        super().__init__(("127.0.0.1", 0), FixtureHandler)
+    def __init__(self, handler=None):
+        super().__init__(("127.0.0.1", 0), handler or FixtureHandler)
         self.requests = []
         self.completions = []
 
@@ -73,23 +73,23 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             time.sleep(0.2)
 
 
-def response_events(model):
-    part = {"type": "output_text", "text": ANSWER, "annotations": []}
-    message = {"id": "msg_fixture", "type": "message", "status": "completed",
+def response_events(model, *, chunks=("Fixture response ", "complete."), tag="fixture"):
+    answer = "".join(chunks)
+    part = {"type": "output_text", "text": answer, "annotations": []}
+    message = {"id": f"msg_{tag}", "type": "message", "status": "completed",
                "role": "assistant", "content": [part]}
-    response = {"id": "resp_fixture", "object": "response", "created_at": 1,
+    response = {"id": f"resp_{tag}", "object": "response", "created_at": 1,
                 "status": "completed", "model": model, "output": [message],
                 "usage": {"input_tokens": 1, "output_tokens": 3, "total_tokens": 4}}
-    location = {"item_id": "msg_fixture", "output_index": 0, "content_index": 0}
+    location = {"item_id": message["id"], "output_index": 0, "content_index": 0}
     return [
         {"type": "response.created", "response": dict(response, status="in_progress", output=[])},
         {"type": "response.output_item.added", "output_index": 0,
          "item": dict(message, status="in_progress", content=[])},
         {"type": "response.content_part.added", **location,
          "part": {"type": "output_text", "text": "", "annotations": []}},
-        {"type": "response.output_text.delta", **location, "delta": "Fixture response "},
-        {"type": "response.output_text.delta", **location, "delta": "complete."},
-        {"type": "response.output_text.done", **location, "text": ANSWER},
+        *({"type": "response.output_text.delta", **location, "delta": text} for text in chunks),
+        {"type": "response.output_text.done", **location, "text": answer},
         {"type": "response.content_part.done", **location, "part": part},
         {"type": "response.output_item.done", "output_index": 0, "item": message},
         {"type": "response.completed", "response": response},
