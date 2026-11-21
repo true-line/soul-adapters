@@ -105,7 +105,7 @@ def check_session(child, cwd):
     raise SessionRefused("session/new: response limit exceeded")
 
 
-def handshake(root, session_mode=None):
+def private_state(root, session_mode):
     state = root / "state"
     state.mkdir(mode=0o700)
     env = {"PATH": "/usr/bin:/bin"}
@@ -122,10 +122,19 @@ def handshake(root, session_mode=None):
                    XDG_DATA_DIRS=env["XDG_DATA_HOME"])
         if session_mode == "member-temp":
             env["CLAUDE_CODE_TMPDIR"] = env["TMPDIR"]
+    return state, cwd, env
+
+
+def handshake(root, session_mode=None):
+    state, cwd, env = private_state(root, session_mode)
     adapter = root / "claude-agent-acp"
     command = ["/usr/bin/sandbox-exec", "-D", f"ADAPTER={adapter}",
                "-D", f"CLI={root / 'claude'}", "-D", f"STATE={state}",
                "-f", str(Path(__file__).with_suffix(".sb").resolve()), str(adapter)]
+    check_acp(command, cwd, env, session_mode)
+
+
+def check_acp(command, cwd, env, session_mode):
     with subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True,
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL) as child:
