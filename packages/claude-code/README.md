@@ -165,6 +165,19 @@ The receipt reports these observations without printing transcript contents.
 This check exercises the native CLI's local history. The ACP and Read checks
 keep their existing behavior.
 
+### Reload a session in a fresh ACP process
+
+Run the same command with `--acp-load-fixture`. The stock ACP adapter
+advertises both `loadSession` and `sessionCapabilities.resume` during
+initialization. The first process finishes a turn and saves the native
+transcript in the fresh member home. A second process uses the original
+session ID, workspace, and state. It calls `session/load`, checks both
+replayed messages, and sends another prompt. The same synthetic Unix server
+requires the prior turn in the new Messages request and the fixture confirms
+that the transcript now contains the second turn. This check exercises
+`session/load`, which replays history. The separate `session/resume` method
+is advertised and is outside this fixture.
+
 ### Optional bound HQ draft check
 
 The Read fixture can also run against HQ draft [#208](https://github.com/true-line/agent-bot-hq/pull/208), commit `b3c4a6aadfe20abcac547ba17cd4538d3b00a68c`.
