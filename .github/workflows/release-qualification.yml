@@ -175,7 +175,8 @@ jobs:
           };
           fs.writeFileSync(process.env.RUNNER_TEMP + '/evidence/source.json', JSON.stringify(data) + '\n');
           NODE
-          find "$RUNNER_TEMP/evidence" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/evidence/SHA256SUMS"
+          cd "$RUNNER_TEMP/evidence"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qualification-release-candidate
