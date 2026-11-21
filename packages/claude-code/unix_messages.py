@@ -316,8 +316,11 @@ def observe_acp(child, cwd, fixture, *, check_load=False, load_session=None):
             if frame["method"] == "session/update" and params.get("sessionId") == load_session:
                 update = params["update"]
                 content = update.get("content", {})
-                chunks = replay.get(update["sessionUpdate"])
+                role = update["sessionUpdate"]
+                chunks = replay.get(role)
                 if chunks is not None and content.get("type") == "text":
+                    if role == "user_message_chunk":
+                        require(not replay["agent_message_chunk"], "ACP replayed the reply before the full prompt")
                     chunks.append(content["text"])
 
         write_rpc(child, {"id": 2, "method": "session/load", "params": {
