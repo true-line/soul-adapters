@@ -181,8 +181,10 @@ translates the modeled turn into two `inference.responses` operations. The
 fixture provider compares the entire carried system, ordered messages, Read
 schema and output cap against the shim input; it asserts the tool request and
 file result, exact synthetic usage and two completed zero-cost ledger entries.
-HQ events are forwarded as they arrive. The provider waits for the stock client
-to observe the first text chunk before emitting the second.
+The shim forwards text deltas as they arrive. The provider waits for the stock
+client to observe the first text chunk before emitting the second. For a Read,
+the shim collects the tool-call fragments and forwards them once HQ validates
+the full arguments and returns the `tool_use` terminal result.
 The shim renames `max_tokens` and omits `context_management`, `metadata` and
 `thinking`; ACP's separate auxiliary requests are refused by the fixture.
 Stock Claude does not authenticate to HQ in this check. The shim, fixture
