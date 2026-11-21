@@ -1,0 +1,108 @@
+name: Build test-only signed qualification fixture
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/qualification-fixture.yml
+      - scripts/test-only-qualification-fixture.mjs
+
+permissions: {}
+
+jobs:
+  fixture:
+    if: github.event.pull_request.head.repo.full_name == 'true-line/soul-adapters'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CONTRACTS_COMMIT: 0ec25670fde95f8417c985c318f4875b7eb2918f
+      MACHINE_COMMIT: 10441e07de7bf33ceb1e5e47f74916ac67ff2694
+    steps:
+      - name: Fetch exact PR merge source
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          git init --quiet
+          git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+      - name: Fetch exact contracts and Machine source
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/contracts" "$RUNNER_TEMP/machine"
+          for spec in "contracts soul-contracts $CONTRACTS_COMMIT" "machine agent-bot-machine $MACHINE_COMMIT"; do
+            read -r folder repository commit <<< "$spec"
+            git -C "$RUNNER_TEMP/$folder" init --quiet
+            git -C "$RUNNER_TEMP/$folder" -c credential.helper= fetch --quiet --no-tags --depth=1 "https://github.com/true-line/$repository.git" "$commit"
+            test "$(git -C "$RUNNER_TEMP/$folder" rev-parse FETCH_HEAD)" = "$commit"
+            git -C "$RUNNER_TEMP/$folder" checkout --quiet --detach FETCH_HEAD
+          done
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Generate synthetic owner policy and signed host envelopes
+        run: |
+          set -euo pipefail
+          cosign trusted-root create --with-default-services --out "$RUNNER_TEMP/fixture-root.json"
+          node scripts/test-only-qualification-fixture.mjs \
+            "$RUNNER_TEMP/contracts/fixtures/qualification/macos/host-protected.json" \
+            "$RUNNER_TEMP/contracts/fixtures/qualification/macos/host-cooperative.json" \
+            "$RUNNER_TEMP/fixture-root.json" "$RUNNER_TEMP/fixture" \
+            > "$RUNNER_TEMP/fixture/generation.json"
+          cd "$RUNNER_TEMP/machine"
+          go run ./cmd/mm-qualification-preflight \
+            -owner-root "$RUNNER_TEMP/fixture/owner-root.hex" \
+            -owner-key-id "$(cat "$RUNNER_TEMP/fixture/owner-key-id.txt")" \
+            -policy-envelope "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            -qualification "$RUNNER_TEMP/fixture/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/fixture/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/fixture/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/fixture/preflight.json"
+          node - "$RUNNER_TEMP/fixture" <<'NODE'
+          const fs = require('node:fs');
+          const dir = process.argv[2];
+          const generated = JSON.parse(fs.readFileSync(dir + '/generation.json'));
+          const verified = JSON.parse(fs.readFileSync(dir + '/preflight.json'));
+          for (const key of ['qualification_sha256', 'protected_report_sha256', 'cooperative_report_sha256']) {
+            if (generated[key] !== verified[key]) throw new Error('Machine preflight digest mismatch: ' + key);
+          }
+          NODE
+      - name: Sign test-only exact qualification bytes
+        run: |
+          set -euo pipefail
+          cosign attest-blob \
+            --statement "$RUNNER_TEMP/fixture/statement.json" \
+            --bundle "$RUNNER_TEMP/fixture/bundle.json" \
+            --yes "$RUNNER_TEMP/fixture/qualification.json"
+          cosign verify-blob-attestation "$RUNNER_TEMP/fixture/qualification.json" \
+            --bundle "$RUNNER_TEMP/fixture/bundle.json" \
+            --trusted-root "$RUNNER_TEMP/fixture/trusted-root.json" \
+            --type https://true-line.ai/soul-contracts/adapter/v1/macos-protected-qualification \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/qualification-fixture.yml@$GITHUB_REF" \
+            > "$RUNNER_TEMP/fixture/cosign-verification.txt"
+          cd "$RUNNER_TEMP/machine"
+          bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/fixture/bundle.json" | cut -d ' ' -f 1)"
+          go run ./cmd/mm-qualification-verify-release \
+            -owner-root "$RUNNER_TEMP/fixture/owner-root.hex" \
+            -owner-key-id "$(cat "$RUNNER_TEMP/fixture/owner-key-id.txt")" \
+            -policy-envelope "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            -trusted-root "$RUNNER_TEMP/fixture/trusted-root.json" \
+            -bundle "$RUNNER_TEMP/fixture/bundle.json" \
+            -bundle-sha256 "$bundle_sha" \
+            -qualification "$RUNNER_TEMP/fixture/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/fixture/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/fixture/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/fixture/offline-verification.json"
+          cd "$RUNNER_TEMP/fixture"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-only-signed-qualification
+          path: ${{ runner.temp }}/fixture/
+          if-no-files-found: error
