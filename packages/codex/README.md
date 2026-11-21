@@ -23,10 +23,13 @@ directories.
 
 For each of ACP v1 and v2, the adapter must identify itself, advertise
 `api-key` and `chat-gpt`, and refuse a signed-out `session/new` with
-`-32000 Authentication required`. Closing stdin must yield a clean exit
-without an unexpected response or a surviving child process. The check sends an empty MCP server list and ends before
-login or a model prompt. Platform integration and profile qualification remain
-pending.
+`-32000 Authentication required`. Before closing stdin, the check reads
+Darwin executable-path metadata for its own live descendants and verifies
+the expected native app-server path. Node 24.19.0's fallback wrapper replaces
+itself with the native child. Closing stdin must yield a clean exit without
+an unexpected response or a surviving child. The check sends an empty MCP
+server list and ends before login or a model prompt. Platform integration
+and profile qualification remain pending.
 
 ## Local provider session check in a disposable macOS guest
 
