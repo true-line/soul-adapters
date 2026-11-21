@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "name": "acp-offline-check",
+  "version": "1.0.0",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "2.8.0",
+    "@openai/codex": "0.170.0"
+  }
+}
