@@ -82,6 +82,8 @@ class ReadBridge:
                 try:
                     os.killpg(self.proc.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
+                    # Darwin can refuse a signal after the group exits. The checks
+                    # below still reap the leader and verify the group is gone.
                     pass
                 code = self.proc.wait(timeout=5)
                 wait_for_process_group_exit(self.proc.pid)
