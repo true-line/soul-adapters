@@ -216,6 +216,7 @@ def run_client(command, cwd, env, stdin, observe, fixture):
             try:
                 os.killpg(child.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
+                # Darwin may report either result for an exited group; verify cleanup below.
                 pass
             status = child.wait(timeout=5)
             wait_for_process_group_exit(child.pid)
