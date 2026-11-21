@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "status": "unqualified-draft",
+  "adapter": {
+    "id": "claude-code",
+    "version": "0.109.0",
+    "package_name": "@agentclientprotocol/claude-agent-acp",
+    "release_asset": "claude-agent-acp-darwin-arm64.zip",
+    "package_sha256": "sha256:603fdb593f00335a996986f9ed9f8a84928dad4b20e08b25862782fd770b2a28",
+    "executable": "claude-agent-acp",
+    "executable_sha256": "sha256:2d48a3f9ee728def1365e89bbd0571141a607ae281344999b0349ab209bc4d39"
+  },
+  "adjacent_cli": {
+    "name": "claude",
+    "version": "2.1.328",
+    "binary_sha256": "sha256:e85547190ef8cd983033ba61b17194045a6fea00035da349efeabed86badacc9",
+    "npm_package": "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+    "npm_package_version": "0.3.328",
+    "npm_integrity": "sha512-vjBASSSZFNs5M84XONCM4xAJMKPD0E9RtF0UDQ/a1Qqt5L+slNxhSADkH5n0tEM5HJMK7j9DCPi+0FVOBpZr3w==",
+    "source_tree": null
+  },
+  "upstream_source": {
+    "repository": "agentclientprotocol/claude-agent-acp",
+    "tag": "v0.109.0",
+    "commit": "9f1ca6eb9c65c2f5d1bbf48335af42947ddb74d6",
+    "tree": "f7d42951a63c708567a4ef4f0f70275c735ed7b6"
+  },
+  "adapter_release": {
+    "source_repository": "true-line/soul-adapters",
+    "source_commit": null,
+    "source_tree": null,
+    "workflow": null,
+    "signed_receipt": null
+  },
+  "build_provenance": {
+    "workflow": ".github/workflows/binaries.yml",
+    "workflow_source_sha256": "sha256:ac4c50f637ae5193bf7b7a15e3ddf02d4076ddb48e700d15c7cea4c7d653650e",
+    "build_script_sha256": "sha256:b6d557070868e3e372c7e63da080168b7def0ea7e43e54ca83f8f9631d126f58",
+    "package_lock_sha256": "sha256:df8282614078b4eb944a4a0d44a7adb230dbe607cc14c5821445b5f25e2932d7",
+    "resolved_node_version": null,
+    "resolved_bun_version": null,
+    "builder_sha256": null,
+    "toolchain_sha256": null,
+    "signed_build_receipt": null
+  },
+  "profiles_qualified": []
+}
