@@ -1,0 +1,14 @@
+(version 1)
+(deny default)
+(import "dyld-support.sb")
+
+; The adapter can start its adjacent CLI for its background auth-status probe.
+(allow process-fork)
+(allow process-exec file-read* file-map-executable
+       (literal (param "ADAPTER")) (literal (param "CLI")))
+(allow file-read* file-map-executable (subpath "/System/Library/Frameworks")
+       (subpath "/System/Library/PrivateFrameworks") (subpath "/usr/lib"))
+(allow file-read* file-write* (subpath (param "STATE")))
+(allow file-read* (literal "/dev/urandom") (literal "/dev/random"))
+(allow file-read* file-write* (literal "/dev/null"))
+(allow sysctl-read)

@@ -1,0 +1,30 @@
+name: Claude Code ACP initialize
+
+on:
+  pull_request:
+    paths:
+      - packages/claude-code/**
+      - .github/workflows/claude-code-initialize.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  initialize:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - name: Fetch the public event commit
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          git init --quiet
+          git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+      - name: Check offline session probe response handling
+        run: python3 -B -m unittest discover -s packages/claude-code -p session_test.py
+      - name: Check pinned Darwin arm64 package offline
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: python3 packages/claude-code/initialize.py
