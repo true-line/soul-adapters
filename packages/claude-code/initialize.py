@@ -158,6 +158,21 @@ def handshake(root, session_mode=None):
     check_acp(command, cwd, env, session_mode)
 
 
+def wait_for_process_group_exit(pid):
+    deadline = time.monotonic() + 5
+    while True:
+        snapshot = subprocess.run(["/bin/ps", "-A", "-o", "pgid=,stat="],
+                                  capture_output=True, text=True, check=True,
+                                  timeout=5, env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"})
+        group = [stat for pgid, stat in (line.split() for line in snapshot.stdout.splitlines())
+                 if pgid == str(pid)]
+        if not any(not stat.startswith("Z") for stat in group):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("adapter process group did not exit")
+        time.sleep(0.05)
+
+
 def check_acp(command, cwd, env, session_mode):
     with subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True,
                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -223,18 +238,7 @@ def check_acp(command, cwd, env, session_mode):
                 # Require positive disappearance before reporting success.
                 pass
             code = child.wait(timeout=5)
-            deadline = time.monotonic() + 5
-            while True:
-                snapshot = subprocess.run(["/bin/ps", "-A", "-o", "pgid=,stat="],
-                                          capture_output=True, text=True, check=True,
-                                          timeout=5, env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"})
-                group = [stat for pgid, stat in (line.split() for line in snapshot.stdout.splitlines())
-                         if pgid == str(child.pid)]
-                if not any(not stat.startswith("Z") for stat in group):
-                    break
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("adapter process group did not exit")
-                time.sleep(0.05)
+            wait_for_process_group_exit(child.pid)
         if code != 0:
             raise ValueError("adapter did not exit zero after stdin EOF")
 

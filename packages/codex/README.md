@@ -109,3 +109,21 @@ must name `managed-cooperative`.
 
 This is an isolated cooperative integration check. It does not enroll a device,
 use a real vendor credential, run the protected profile, or qualify a host.
+
+## Native session reload in a disposable guest
+
+Using the same guest, Node runtime and offline npm cache as the cooperative
+loopback check, run:
+
+```sh
+python3 check/native_resume.py
+```
+
+The check explicitly places Codex home and related state inside a fresh
+member-shaped `soul/Contents/home/m_lead` fixture. It completes a synthetic
+loopback turn, closes the ACP client at the completed-turn boundary, starts a
+new stock adapter, loads the native session by ID, verifies replay of both
+messages, and completes a second turn. It checks that a nonempty native
+rollout exists in the configured private state. This is a cooperative native
+adapter check; it does not demonstrate Soul-managed environment isolation,
+Soul front-door session reload, or application durable handoff.
