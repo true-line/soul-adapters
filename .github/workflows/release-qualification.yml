@@ -57,6 +57,7 @@ jobs:
           git -C "$RUNNER_TEMP/machine" checkout --quiet --detach FETCH_HEAD
           test -s "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex"
           test -s "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt"
+          test -s "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json"
           git -C "$RUNNER_TEMP/conformance" init --quiet
           git -C "$RUNNER_TEMP/conformance" -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-conformance.git "$EVIDENCE_COMMIT"
           test "$(git -C "$RUNNER_TEMP/conformance" rev-parse FETCH_HEAD)" = "$EVIDENCE_COMMIT"
@@ -108,7 +109,7 @@ jobs:
           EXPIRES_AT: ${{ inputs.expires_at }}
         run: |
           set -euo pipefail
-          cosign trusted-root create --with-default-services --out "$RUNNER_TEMP/evidence/trusted-root.json"
+          cp "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json" "$RUNNER_TEMP/evidence/trusted-root.json"
           node scripts/qualification-statement.mjs \
             "$RUNNER_TEMP/evidence/qualification.json" \
             "$RUNNER_TEMP/evidence/preflight.json" \
