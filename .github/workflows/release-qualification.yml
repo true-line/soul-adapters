@@ -28,7 +28,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      MACHINE_COMMIT: 71e46c3156a740ff024f853292e4c34adbfbc727
+      MACHINE_COMMIT: 52c92c5d90ef0e61a4c717b3121a192ed3898c6d
     steps:
       - name: Fetch exact release source
         env:
