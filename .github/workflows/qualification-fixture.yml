@@ -94,18 +94,49 @@ jobs:
             --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/qualification-fixture.yml@$GITHUB_REF" \
             > "$RUNNER_TEMP/fixture/cosign-verification.txt"
           cd "$RUNNER_TEMP/machine"
+          go build -o "$RUNNER_TEMP/verify-release" ./cmd/mm-qualification-verify-release
           bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/fixture/bundle.json" | cut -d ' ' -f 1)"
-          go run ./cmd/mm-qualification-verify-release \
-            -owner-root "$RUNNER_TEMP/fixture/owner-root.hex" \
-            -owner-key-id "$(cat "$RUNNER_TEMP/fixture/owner-key-id.txt")" \
-            -policy-envelope "$RUNNER_TEMP/fixture/policy-envelope.json" \
-            -trusted-root "$RUNNER_TEMP/fixture/trusted-root.json" \
-            -bundle "$RUNNER_TEMP/fixture/bundle.json" \
-            -bundle-sha256 "$bundle_sha" \
-            -qualification "$RUNNER_TEMP/fixture/qualification.json" \
-            -protected-envelope "$RUNNER_TEMP/fixture/protected-envelope.json" \
-            -cooperative-envelope "$RUNNER_TEMP/fixture/cooperative-envelope.json" \
+          verify_release() {
+            "$RUNNER_TEMP/verify-release" \
+              -owner-root "$RUNNER_TEMP/fixture/owner-root.hex" \
+              -owner-key-id "$(cat "$RUNNER_TEMP/fixture/owner-key-id.txt")" \
+              -policy-envelope "$1" \
+              -trusted-root "$RUNNER_TEMP/fixture/trusted-root.json" \
+              -bundle "$2" \
+              -bundle-sha256 "$3" \
+              -qualification "$RUNNER_TEMP/fixture/qualification.json" \
+              -protected-envelope "$RUNNER_TEMP/fixture/protected-envelope.json" \
+              -cooperative-envelope "$RUNNER_TEMP/fixture/cooperative-envelope.json"
+          }
+          verify_release "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha" \
             > "$RUNNER_TEMP/fixture/offline-verification.json"
+          node - "$RUNNER_TEMP/fixture" <<'NODE'
+          const fs = require('node:fs');
+          const dir = process.argv[2];
+          const bundle = JSON.parse(fs.readFileSync(dir + '/bundle.json'));
+          const payload = bundle.dsseEnvelope.payload;
+          bundle.dsseEnvelope.payload = (payload[0] === 'A' ? 'B' : 'A') + payload.slice(1);
+          fs.writeFileSync(dir + '/bundle.altered.json', JSON.stringify(bundle));
+          NODE
+          altered_sha="sha256:$(sha256sum "$RUNNER_TEMP/fixture/bundle.altered.json" | cut -d ' ' -f 1)"
+          expect_refusal() {
+            local name="$1"
+            shift
+            local status=0
+            verify_release "$@" > "$RUNNER_TEMP/fixture/$name.stdout.txt" \
+              2> "$RUNNER_TEMP/fixture/$name.stderr.txt" || status=$?
+            test "$status" -eq 1
+            test ! -s "$RUNNER_TEMP/fixture/$name.stdout.txt"
+          }
+          expect_refusal altered-bundle "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            "$RUNNER_TEMP/fixture/bundle.altered.json" "$altered_sha"
+          expect_refusal wrong-identity "$RUNNER_TEMP/fixture/policy-envelope.wrong-identity.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha"
+          expect_refusal stale-revocation "$RUNNER_TEMP/fixture/policy-envelope.stale-revocation.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha"
+          expect_refusal wrong-host "$RUNNER_TEMP/fixture/policy-envelope.wrong-host.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha"
           cd "$RUNNER_TEMP/fixture"
           find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - name: Emit verified fixture for Agent Bot archival
