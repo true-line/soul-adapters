@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 
-from session import PACKAGE, exchange, initialize, install_packages, private_env, read_frame, session
+from session import CODEX_VERSION_OUTPUT, PACKAGE, exchange, initialize, install_packages, private_env, read_frame, session
 from vm_session import require_guest
 
 
@@ -204,7 +204,7 @@ def main():
     packages = install_packages(root, str(node), str(npm), root / "cache")
     cli = packages / "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
     adapter = packages / PACKAGE / "dist/index.js"
-    if subprocess.check_output([cli, "--version"], timeout=15).strip() != b"codex-cli 0.170.0":
+    if subprocess.check_output([cli, "--version"], timeout=15).strip() != CODEX_VERSION_OUTPUT:
         raise ValueError("unexpected Codex CLI version")
     sandbox = cooperative_sandbox(root)
     server = FixtureServer()

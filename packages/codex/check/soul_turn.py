@@ -15,7 +15,7 @@ import time
 from contextlib import closing
 
 from loopback_turn import FixtureServer, configured_state
-from session import install_packages, live_sidecars
+from session import CODEX_VERSION_OUTPUT, install_packages, live_sidecars
 from vm_session import require_guest
 
 
@@ -103,7 +103,7 @@ def main():
         unpack(args.conformance, root / "conformance", INPUTS["conformance"])
         packages = install_packages(root, str(node), str(npm), args.npm_cache.resolve())
         cli = packages / "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
-        if subprocess.check_output([cli, "--version"], timeout=15).strip() != b"codex-cli 0.170.0":
+        if subprocess.check_output([cli, "--version"], timeout=15).strip() != CODEX_VERSION_OUTPUT:
             raise ValueError("unexpected Codex CLI version")
         server = FixtureServer()
         worker = threading.Thread(target=server.serve_forever, daemon=True)
