@@ -38,6 +38,13 @@ def check_local_session(child, wire, state, *, gateway):
     session_id = reply.get("result", {}).get("sessionId")
     if set(reply) != {"jsonrpc", "id", "result"} or not isinstance(session_id, str) or not session_id.strip():
         raise ValueError("no local session ID returned")
+    if gateway:
+        listing = exchange(child, 4, "providers/list", {})
+        providers = listing.get("result", {}).get("providers")
+        expected = {"apiType": "openai", "baseUrl": BASE_URL}
+        if (not isinstance(providers, list) or len(providers) != 1 or not isinstance(providers[0], dict)
+                or providers[0].get("providerId") != "openai" or providers[0].get("current") != expected):
+            raise ValueError("Codex did not report the selected fixture gateway")
 
 
 def check(root, packages, node, profile):
@@ -66,6 +73,8 @@ def check(root, packages, node, profile):
             handshake = check_signed_out if mode == "default" else partial(check_local_session, gateway=mode == "gateway")
             session(sandbox + [str(node), str(adapter)], env, state, wire, handshake)
             outcome = "authentication required" if mode == "default" else "local session ID returned"
+            if mode == "gateway":
+                outcome += ", selected fixture gateway confirmed"
             print(f"PASS ACP v{wire} {mode}: {outcome}, clean EOF")
 
 
