@@ -15,7 +15,10 @@ from contextlib import closing
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = "@agentclientprotocol/codex-acp"
-CODEX_VERSION = json.loads((HERE / "package-lock.json").read_text())["packages"][""]["dependencies"]["@openai/codex"]
+LOCKED_PACKAGES = json.loads((HERE / "package-lock.json").read_text())["packages"]
+CODEX_VERSION = LOCKED_PACKAGES[""]["dependencies"]["@openai/codex"]
+FALLBACK_CODEX_VERSION = LOCKED_PACKAGES[f"node_modules/{PACKAGE}/node_modules/@openai/codex"]["version"]
+NATIVE_CODEX = "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
 CODEX_VERSION_OUTPUT = f"codex-cli {CODEX_VERSION}".encode()
 
 
@@ -133,7 +136,9 @@ def session(command, env, state, wire, handshake=check_signed_out):
 
 
 def private_env(state, cli):
-    env = {"PATH": "/usr/bin:/bin", "CODEX_PATH": str(cli)}
+    env = {"PATH": "/usr/bin:/bin"}
+    if cli is not None:
+        env["CODEX_PATH"] = str(cli)
     for name in ("HOME", "CODEX_HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
                  "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
         path = state / name.lower()
@@ -142,12 +147,15 @@ def private_env(state, cli):
     return env
 
 
-def check(packages, state, node, wire):
-    cli = packages / "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+def check(packages, state, node, wire, *, package_fallback=False):
+    explicit = packages / NATIVE_CODEX
+    fallback = packages / PACKAGE / "node_modules" / NATIVE_CODEX
+    cli, excluded = (fallback, explicit) if package_fallback else (explicit, fallback)
+    expected_version = FALLBACK_CODEX_VERSION if package_fallback else CODEX_VERSION
     adapter = packages / PACKAGE / "dist/index.js"
     sandbox = ["/usr/bin/sandbox-exec", "-D", f"NODE={node}", "-D", f"CODEX={cli}",
                "-D", f"PACKAGES={packages}", "-D", f"STATE={state}", "-f", str(HERE / "session.sb")]
-    env = private_env(state, cli)
+    env = private_env(state, None if package_fallback else cli)
     # Distinguish a denied socket from a reachable host with a closed port.
     # The canary is deliberately readable by this user outside the sandbox.
     canary = state.parent / "read-control"
@@ -164,10 +172,18 @@ def check(packages, state, node, wire):
     subprocess.run(sandbox + [str(node), "-e", control, str(canary)],
                    cwd=state, env=env, check=True, timeout=15)
     version = subprocess.check_output(sandbox + [str(cli), "--version"], cwd=state, env=env, timeout=15)
-    if version.strip() != CODEX_VERSION_OUTPUT:
+    if version.strip() != f"codex-cli {expected_version}".encode():
         raise ValueError("unexpected Codex CLI version")
+    if wire == 1:
+        # The other locked binary works under its own policy. It must not be
+        # an executable alternative during this stock ACP handshake.
+        control = subprocess.run(sandbox + [str(excluded), "--version"], cwd=state, env=env,
+                                 capture_output=True, timeout=15)
+        if control.returncode == 0:
+            raise ValueError("sandbox allowed the other locked Codex CLI")
     session(sandbox + [str(node), str(adapter)], env, state, wire)
-    print(f"PASS codex-acp 2.8.0 / codex-cli {CODEX_VERSION}: ACP v{wire} advertised api-key and chat-gpt, "
+    selection = "package fallback" if package_fallback else "explicit CODEX_PATH"
+    print(f"PASS codex-acp 2.8.0 / codex-cli {expected_version} ({selection}): ACP v{wire} advertised api-key and chat-gpt, "
           "session/new refused (-32000 Authentication required), EOF exit 0")
 
 
@@ -200,6 +216,9 @@ def main():
             state = root / f"state-v{wire}"
             state.mkdir(mode=0o700)
             check(packages, state, Path(node).resolve(), wire)
+        state = root / "state-package-fallback"
+        state.mkdir(mode=0o700)
+        check(packages, state, Path(node).resolve(), 1, package_fallback=True)
 
 
 if __name__ == "__main__":
