@@ -19,7 +19,6 @@ from unittest.mock import patch
 import initialize
 import session
 
-from initialize import check_eof, check_session, SessionRefused
 
 
 def child_with(*frames):
@@ -32,15 +31,15 @@ class SessionProbe(unittest.TestCase):
         commands = {"method": "session/update", "params": {"sessionId": "mine", "update":
                     {"sessionUpdate": "available_commands_update", "availableCommands": []}}}
         auth = {"method": "auth/status_update", "params": {"state": {}}}
-        check_eof(child_with(commands, auth).stdout, "mine")
-        check_eof(child_with(auth, commands).stdout, "mine")
+        initialize.check_eof(child_with(commands, auth).stdout, "mine")
+        initialize.check_eof(child_with(auth, commands).stdout, "mine")
         for frames, session_id in (([commands], "other"), ([commands], None), ([auth], None),
                                    ([commands, commands], "mine"), ([{"id": 2, "result": {}}], "mine"),
                                    ([{"method": "other", "params": {}}], "mine"),
                                    ([{"method": "session/update", "params": {"sessionId": "mine", "update":
                                       {"sessionUpdate": "agent_message_chunk", "content": {}}}}], "mine")):
             with self.subTest(frames=frames, session_id=session_id), self.assertRaises(ValueError):
-                check_eof(child_with(*frames).stdout, session_id)
+                initialize.check_eof(child_with(*frames).stdout, session_id)
 
     def test_existing_client_semantics(self):
         child = child_with(
@@ -49,7 +48,7 @@ class SessionProbe(unittest.TestCase):
             {"id": 5, "method": "unimplemented"},
             {"id": 2, "result": {"sessionId": "fixture-session"}},
         )
-        check_session(child, Path("/fixture/member"))
+        initialize.check_session(child, Path("/fixture/member"))
         request, cancelled, unavailable = map(json.loads, child.stdin.getvalue().splitlines())
         self.assertEqual(request["method"], "session/new")
         self.assertEqual(request["params"], {"cwd": "/fixture/member", "mcpServers": []})
@@ -58,13 +57,13 @@ class SessionProbe(unittest.TestCase):
 
     def test_refusal_is_sanitized(self):
         child = child_with({"id": 2, "error": {"code": -32603, "message": "EACCES, mkdir '/tmp/claude-123/fixture'"} })
-        with self.assertRaisesRegex(SessionRefused, r"^session/new: JSON-RPC refusal -32603 \(mkdir outside member-private temp\)$"):
-            check_session(child, Path("/fixture/member"))
+        with self.assertRaisesRegex(initialize.SessionRefused, r"^session/new: JSON-RPC refusal -32603 \(mkdir outside member-private temp\)$"):
+            initialize.check_session(child, Path("/fixture/member"))
 
     def test_missing_session(self):
         for response in [{"id": 1, "result": {}}, {"id": 2, "result": {}}, {"method": "session/update"}]:
-            with self.subTest(response=response), self.assertRaises(SessionRefused):
-                check_session(child_with(response), Path("/fixture/member"))
+            with self.subTest(response=response), self.assertRaises(initialize.SessionRefused):
+                initialize.check_session(child_with(response), Path("/fixture/member"))
 
 
 class StagedBundleProbe(unittest.TestCase):
