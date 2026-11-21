@@ -138,6 +138,7 @@ jobs:
       - name: Sign exact release Statement
         env:
           EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
+          EVIDENCE_DIR: ${{ inputs.evidence_dir }}
         run: |
           set -euo pipefail
           cosign attest-blob \
@@ -170,6 +171,8 @@ jobs:
             release_source_commit: process.env.GITHUB_SHA,
             evidence_repository: 'true-line/soul-conformance',
             evidence_commit: process.env.EVIDENCE_COMMIT,
+            evidence_dir: process.env.EVIDENCE_DIR,
+            generated_at: new Date().toISOString(),
             machine_preflight_commit: process.env.MACHINE_COMMIT,
             workflow: '.github/workflows/release-qualification.yml',
             oidc_issuer: 'https://token.actions.githubusercontent.com',
