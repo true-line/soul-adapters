@@ -15,6 +15,8 @@ from contextlib import closing
 
 HERE = Path(__file__).resolve().parent
 PACKAGE = "@agentclientprotocol/codex-acp"
+CODEX_VERSION = json.loads((HERE / "package-lock.json").read_text())["packages"][""]["dependencies"]["@openai/codex"]
+CODEX_VERSION_OUTPUT = f"codex-cli {CODEX_VERSION}".encode()
 
 
 def read_frame(stream):
@@ -162,10 +164,10 @@ def check(packages, state, node, wire):
     subprocess.run(sandbox + [str(node), "-e", control, str(canary)],
                    cwd=state, env=env, check=True, timeout=15)
     version = subprocess.check_output(sandbox + [str(cli), "--version"], cwd=state, env=env, timeout=15)
-    if version.strip() != b"codex-cli 0.170.0":
+    if version.strip() != CODEX_VERSION_OUTPUT:
         raise ValueError("unexpected Codex CLI version")
     session(sandbox + [str(node), str(adapter)], env, state, wire)
-    print(f"PASS codex-acp 2.8.0 / codex-cli 0.170.0: ACP v{wire} advertised api-key and chat-gpt, "
+    print(f"PASS codex-acp 2.8.0 / codex-cli {CODEX_VERSION}: ACP v{wire} advertised api-key and chat-gpt, "
           "session/new refused (-32000 Authentication required), EOF exit 0")
 
 

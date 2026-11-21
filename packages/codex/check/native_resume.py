@@ -8,7 +8,7 @@ import tempfile
 import threading
 
 from loopback_turn import ANSWER, PROMPT, FixtureServer, configured_state, cooperative_sandbox
-from session import PACKAGE, exchange, initialize, install_packages, read_frame, session
+from session import CODEX_VERSION_OUTPUT, PACKAGE, exchange, initialize, install_packages, read_frame, session
 from vm_session import require_guest
 
 
@@ -95,7 +95,7 @@ def main():
         root = Path(temporary)
         packages = install_packages(root, str(node), str(npm), source / "cache")
         cli = packages / "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
-        if subprocess.check_output([cli, "--version"], timeout=15).strip() != b"codex-cli 0.170.0":
+        if subprocess.check_output([cli, "--version"], timeout=15).strip() != CODEX_VERSION_OUTPUT:
             raise ValueError("unexpected Codex CLI version")
         server = FixtureServer()
         worker = threading.Thread(target=server.serve_forever, daemon=True)

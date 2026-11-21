@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 
-from session import PACKAGE, check_signed_out, exchange, initialize, install_packages, private_env, session
+from session import CODEX_VERSION_OUTPUT, PACKAGE, check_signed_out, exchange, initialize, install_packages, private_env, session
 
 # agent-bot-machine e2537d299cc677a2c29a6e7719036d103048dcc2
 PROFILE_SHA256 = "717fd0fa41cf25ac36cc786c357c60814d90e19ec47497614e3ca2adf65f8f86"
@@ -68,7 +68,7 @@ def check(root, packages, node, profile):
                 subprocess.run(sandbox + ["/usr/bin/python3", "-IS", "-c", control],
                                cwd=state, env=env, check=True, timeout=10)
                 version = subprocess.check_output(sandbox + [str(cli), "--version"], cwd=state, env=env, timeout=15)
-                if version.strip() != b"codex-cli 0.170.0":
+                if version.strip() != CODEX_VERSION_OUTPUT:
                     raise ValueError("unexpected Codex CLI version")
             handshake = check_signed_out if mode == "default" else partial(check_local_session, gateway=mode == "gateway")
             session(sandbox + [str(node), str(adapter)], env, state, wire, handshake)

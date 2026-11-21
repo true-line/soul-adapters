@@ -13,7 +13,7 @@ const fixture = JSON.parse(readFileSync(join(contracts, 'fixtures/positive/hello
 const soulId = fixture.soul_id;
 const digest = fixture.definition_digest;
 const hello = { ...fixture, requested_profile: 'managed-cooperative', requested_roles: [
-  { role: 'lead', member_id: 'm_lead', adapter_id: 'codex', adapter_version: '0.170.0' },
+  { role: 'lead', member_id: 'm_lead', adapter_id: 'codex', adapter_version: JSON.parse(readFileSync(new URL('./package-lock.json', import.meta.url))).packages[''].dependencies['@agentclientprotocol/codex-acp'] },
 ] };
 const { stage1Subject } = await import(pathToFileURL(join(root, 'conformance/lib/stage1-subject.mjs')));
 const { rpcPeer } = await import(pathToFileURL(join(runtime, 'lib/jsonrpc.mjs')));
