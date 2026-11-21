@@ -65,7 +65,11 @@ async function check(hqTar, soulsTar, archive, profile) {
     const { startHQ, SOUL, DIGEST } = await load('hq/tests/hq-harness.mjs');
     const { default: broker } = await load('hq/vendor/plugins/agent-comms/plugin.mjs');
     const { startSoul } = await load('souls/lib/entry-point.mjs');
-    host = await startHQ({ plugins: [broker] });
+    // Machine compares exact Unix socket paths. Use the canonical private
+    // scratch root even when the guest's TMPDIR is reached through an alias.
+    const hqHome = join(root, 'hq-home');
+    mkdirSync(hqHome, { mode: 0o700 });
+    host = await startHQ({ home: hqHome, plugins: [broker] });
     const fixture = join(root, 'fixture');
     const contents = join(fixture, 'Contents');
     mkdirSync(join(contents, 'host'), { recursive: true });
