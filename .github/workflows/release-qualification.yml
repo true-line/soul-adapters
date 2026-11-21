@@ -28,7 +28,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      MACHINE_COMMIT: 52c92c5d90ef0e61a4c717b3121a192ed3898c6d
+      MACHINE_COMMIT: 10441e07de7bf33ceb1e5e47f74916ac67ff2694
     steps:
       - name: Fetch exact release source
         env:
@@ -148,6 +148,19 @@ jobs:
             --type https://true-line.ai/soul-contracts/adapter/v1/macos-protected-qualification \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main" > "$RUNNER_TEMP/evidence/cosign-verification.txt"
+          bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/evidence/bundle.json" | cut -d ' ' -f 1)"
+          cd "$RUNNER_TEMP/machine"
+          go run ./cmd/mm-qualification-verify-release \
+            -owner-root trust/qualification/owner-root.hex \
+            -owner-key-id "$(cat trust/qualification/owner-key-id.txt)" \
+            -policy-envelope "$RUNNER_TEMP/evidence/policy-envelope.json" \
+            -trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
+            -bundle "$RUNNER_TEMP/evidence/bundle.json" \
+            -bundle-sha256 "$bundle_sha" \
+            -qualification "$RUNNER_TEMP/evidence/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/evidence/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/evidence/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/evidence/offline-verification.json"
           node - <<'NODE'
           const fs = require('node:fs');
           const data = {
