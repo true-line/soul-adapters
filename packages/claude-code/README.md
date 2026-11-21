@@ -70,3 +70,46 @@ new session’s available commands. The probe rejects additional responses,
 repeated notifications, and command lists for a different session. It starts
 no socket listeners and sends no model request. HQ launch approval, member
 authentication and broker traffic still require separate verification.
+
+To check the two halves of startup in the same disposable member launch, pass
+`--member-cli /absolute/path/to/node /absolute/path/to/agent-bot-souls.mjs`
+together with `--machine-profile`. The fixture must launch the check as a
+standard guest user with its own Souls member token, member socket and HQ
+broker socket. Supply the installed public Souls CLI and the verified Node
+runtime from that fixture. The check uses the assigned socket paths in the
+pinned profile and calls `agent-bot-souls member runtime` before running the
+stock ACP startup. Check HQ's `hq.bind` receipt for the admitted member and
+runtime. The CLI closes its authenticated connection when it exits. The stock
+adapter receives no member token, opens its signed-out ACP session, and exits
+on EOF. Model discovery, streaming and a persistent vendor broker transport
+remain outside this check.
+
+### Reproduce the cooperative member check
+
+In the same offline disposable guest, use Node 24 and a standard account. The
+driver stages two verified archives under a fresh private directory. Supply the
+Darwin HQ interim tar built from `f07a9fb57cc0548a5293bff967ed7e0f0c3224e3`
+using the [HQ artifact build procedure](https://github.com/true-line/agent-bot-hq/blob/f07a9fb57cc0548a5293bff967ed7e0f0c3224e3/docs/interim-release-runbook.md).
+It includes the pinned production Comms broker and contracts. Prepare the
+second archive from the public Souls checkout and copy it into the guest:
+
+```sh
+git archive --format=tar --prefix=souls/ 126fff6516785b887a0ceff9cf4f0b5b4bc4bf2a > souls.tar
+```
+
+With the verified HQ, Souls, upstream Claude and Machine policy files, run:
+
+```sh
+node packages/claude-code/member_launch_check.mjs hq.tar souls.tar claude-agent-acp-darwin-arm64.zip harness-egress.sb
+```
+
+The real Souls entry point admits one fixture member through an isolated HQ
+test host with simulated enrollment and launches a local ACP test driver.
+The driver consumes the outer test turn locally. Only ACP initialization and
+session creation reach the stock adapter. The check measures HQ's existing
+cooperative preflight bind before the member starts, then requires exactly
+one additional HMAC bind for the same admitted Soul, member and runtime.
+It compares the public member CLI's epoch and lease generation to Souls'
+admission status and requires a ready member. This exercises one cooperative
+account and shared broker. Dedicated-account launch approval and a credentialed
+provider turn remain separate gates.
