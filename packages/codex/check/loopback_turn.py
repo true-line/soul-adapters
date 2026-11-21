@@ -54,6 +54,10 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             "input_type": type(inputs).__name__,
             "input_roles": sorted({item.get("role", "") for item in inputs if isinstance(item, dict)}),
             "stream": body.get("stream"), "tools_type": type(body.get("tools")).__name__,
+            "fixture_prompt_present": any(
+                isinstance(item, dict) and item.get("role") == "user" and
+                PROMPT in json.dumps(item.get("content")) for item in inputs
+            ),
         })
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

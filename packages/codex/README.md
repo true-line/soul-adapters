@@ -80,3 +80,32 @@ ACP gateway model discovery, incremental ACP agent message chunks before the
 final response event, and `end_turn`. It prints request shapes without message
 contents. It uses fresh state and no real credentials. This test does not run
 the protected profile or qualify HQ launch, broker routing, or vendor access.
+
+## Cooperative Soul front-door turn
+
+A separate guest check runs the actual Soul ACP front door with stock Codex,
+using the same standalone Node/npm runtime and offline cache as the loopback
+check. Prepare these exact inputs on an authorized workstation:
+
+- The Darwin interim HQ archive at commit `f07a9fb57cc0548a5293bff967ed7e0f0c3224e3`, SHA-256 `746281207ad2c853257b70d5a2d2b99e23e88c14604589fcab6473e5e609f84c`.
+- A `git archive --format=tar` of Soul runtime commit `126fff6516785b887a0ceff9cf4f0b5b4bc4bf2a`, SHA-256 `13799b84de4d5099a51490553f9b5e8b829f499a7b128ac6666371e33ec93927`.
+- A `git archive --format=tar` of soul-conformance commit `d70bda70505e7165e10a09b232bcf67e7c5bc14c`, SHA-256 `c9689026339930ee722e690af66fd4e74ece0ef4eaacd4f146c3f7e2c3059f03`.
+
+Copy these archives, `check/`, the offline npm cache, and the standalone Node
+runtime into a fresh disposable Apple Silicon guest. As its standard account:
+
+```sh
+python3 check/soul_turn.py hq.tar souls.tar conformance.tar cache runtime
+```
+
+The check verifies each archive digest, uses the conformance enrollment fixture
+and the packaged HQ's production-pinned broker, and starts the Soul's ordinary
+`run` entry point. Its cooperative sandbox permits loopback TCP and the exact
+guest-local admission, broker, and member sockets. The synthetic provider
+confirms that the literal test prompt reached the stock Codex Responses request;
+the client must receive assistant text and `end_turn`. Admission, Equip, Ready,
+and cooperative launch-refusal receipts must each exist and every HQ receipt
+must name `managed-cooperative`.
+
+This is an isolated cooperative integration check. It does not enroll a device,
+use a real vendor credential, run the protected profile, or qualify a host.
