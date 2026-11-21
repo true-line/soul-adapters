@@ -153,6 +153,18 @@ server send the incremental text reply. The receipt records the observed tool,
 transcript and usage shapes as counts and booleans. Keep this optional check
 inside the same disposable guest.
 
+### Check native CLI session persistence
+
+Run the same command with `--resume-fixture` in the disposable guest. This
+starts a fresh stock CLI session with ordinary persistence enabled. The test
+requires a native transcript in the assigned member home with the unique
+prompt and reply. A second CLI process uses `--resume` and sends a different
+prompt. The Unix fixture checks that this request carries the first turn,
+and the test checks that the second turn is saved under the same session ID.
+The receipt reports these observations without printing transcript contents.
+This check exercises the native CLI's local history. The ACP and Read checks
+keep their existing behavior.
+
 ### Optional bound HQ draft check
 
 The Read fixture can also run against HQ draft [#208](https://github.com/true-line/agent-bot-hq/pull/208), commit `b3c4a6aadfe20abcac547ba17cd4538d3b00a68c`.
