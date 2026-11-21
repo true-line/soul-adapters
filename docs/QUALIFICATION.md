@@ -11,6 +11,8 @@ After Machine verifies the policy and both host signatures, the producer binds i
 
 The production owner root, key ID, initial signed policy, and physical designated-host reports have not been supplied. The workflow remains unable to sign a production qualification until those inputs exist and its pinned Machine commit includes the reviewed trust files. Shape-valid synthetic fixtures and locally generated signatures do not satisfy this gate. The [platform trust decision](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0102-protected-adapter-qualification.md) owns the trust rule; this section describes this repository's producer.
 
+The [approved Stage 2a B-principal amendment](https://github.com/true-line/agent-bot-platform/pull/114) requires a dedicated bridge UID B for each Soul installation, separate from runner R and credential UID C. Protected T03 now needs signed admission and exact socket assignments, kernel peer checks, and an actual HQ broker HMAC bind from B before vendor launch. The current host-report format and pinned Machine verifier do not explicitly bind B's UID to its signed admission proof. The production release must wait for that reviewed trust contract and verifier change plus a new signed report from the designated physical host. A synthetic `T03: pass` field or this release producer's preflight cannot close that gap.
+
 ## Authority for a protected claim
 
 A designated qualification host signs the independent runner’s measured results.
