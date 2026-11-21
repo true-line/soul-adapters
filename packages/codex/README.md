@@ -60,3 +60,23 @@ listener and sends no model prompt. Stop the clone afterward.
 This exercises local session creation under Machine's socket policy. HQ launch
 authorization, member authentication, traffic through the broker and model
 execution still require separate verification.
+
+## Cooperative loopback turn in a disposable guest
+
+To exercise a model turn, use the same disposable guest and offline npm cache
+as above. Copy `check/`, the cache into `cache/`, and standalone Node.js and
+npm into `runtime/bin/` within a fresh private working directory. From that
+directory, as the standard guest user, run:
+
+```sh
+python3 check/loopback_turn.py
+```
+
+The check installs the locked packages offline and starts a synthetic provider
+on guest loopback. A separate cooperative sandbox denies non-loopback network
+access, checked with a connection canary. The fixture sends delayed Responses
+SSE events. The check verifies an actual CLI agent message and completed turn,
+ACP gateway model discovery, incremental ACP agent message chunks before the
+final response event, and `end_turn`. It prints request shapes without message
+contents. It uses fresh state and no real credentials. This test does not run
+the protected profile or qualify HQ launch, broker routing, or vendor access.
