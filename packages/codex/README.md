@@ -12,7 +12,7 @@ python3 packages/codex/check/session.py
 
 The setup downloads the npm packages specified in the check's lockfile and
 verifies their integrity in a temporary installation. It uses codex-acp 2.8.0
-and codex-cli 0.170.0. The runtime check starts with empty private home,
+and codex-cli 0.171.0. The runtime check starts with empty private home,
 configuration, and working directories. Before starting the adapter, it checks
 that the macOS sandbox denies a network connection and a read outside those
 directories.
