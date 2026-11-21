@@ -48,6 +48,7 @@ jobs:
       - name: Generate synthetic owner policy and signed host envelopes
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fixture"
           cosign trusted-root create --with-default-services --out "$RUNNER_TEMP/fixture-root.json"
           node scripts/test-only-qualification-fixture.mjs \
             "$RUNNER_TEMP/contracts/fixtures/qualification/macos/host-protected.json" \

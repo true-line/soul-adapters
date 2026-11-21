@@ -139,6 +139,7 @@ jobs:
           cosign verify-blob-attestation "$RUNNER_TEMP/evidence/qualification.json" \
             --bundle "$RUNNER_TEMP/evidence/bundle.json" \
             --trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
+            --type https://true-line.ai/soul-contracts/adapter/v1/macos-protected-qualification \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main" > "$RUNNER_TEMP/evidence/cosign-verification.txt"
           node - <<'NODE'
