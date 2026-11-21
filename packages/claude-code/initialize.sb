@@ -8,6 +8,8 @@
        (literal (param "ADAPTER")) (literal (param "CLI")))
 (allow file-read* file-map-executable (subpath "/System/Library/Frameworks")
        (subpath "/System/Library/PrivateFrameworks") (subpath "/usr/lib"))
+; Claude Code uses macOS's versioned ICU data during session startup.
+(allow file-read* (regex #"^/usr/share/icu/icudt[0-9]+l[.]dat$"))
 (allow file-read* file-write* (subpath (param "STATE")))
 (allow file-read* (literal "/dev/urandom") (literal "/dev/random"))
 (allow file-read* file-write* (literal "/dev/null"))

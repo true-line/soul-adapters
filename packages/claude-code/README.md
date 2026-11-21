@@ -6,8 +6,9 @@ Status: not started.
 
 The Darwin arm64 [package smoke workflow](../../.github/workflows/claude-code-initialize.yml)
 checks the public [claude-agent-acp v0.109.0 release](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.109.0).
-It pins the archive and both executables, sends one ACP v1 `initialize` over stdio,
-checks the adapter identity and waits for exit zero after closing stdin. The
+It pins the archive and both executables and checks an ACP v1 `initialize`
+over stdio. A second process uses fresh private state to check signed-out
+`session/new`. Both checks verify the adapter identity and exit zero after EOF. The
 agent and its background status probe inherit an isolated home and an offline
 sandbox on a disposable runner. This evaluates the upstream package only.
 Adapter integration, render support and profile qualification remain pending.
@@ -27,6 +28,22 @@ at the same private directory as `TMPDIR`. Use `--temp-mode default` to
 compare the standard environment without that vendor setting. The probe
 only measures this unauthenticated offline exchange. Production sessions may
 require an authorized broker exchange or authenticated vendor state.
+
+For an already staged copy of the release, run the same probe as the intended
+non-root account:
+
+```sh
+python3 -B packages/claude-code/session.py --staged-bundle /absolute/path/to/versioned/bundle
+```
+
+Keep the release files named `claude-agent-acp` and `claude` in the same
+directory. Both must be readable and executable by the account. The probe
+checks both pinned file hashes before invoking the adapter. It leaves the
+bundle in place and creates the working directory, home, caches, and temporary
+state under fresh private scratch. The same offline profile applies. The
+result measures signed-out ACP startup at the staged path. The test profile
+permits reads of macOS ICU data files named `/usr/share/icu/icudt<major>l.dat`.
+It keeps other writes confined to private scratch and denies network access.
 
 ### Ordinary-user control in a disposable macOS guest
 

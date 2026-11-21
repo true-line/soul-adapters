@@ -149,11 +149,13 @@ def private_state(root, session_mode):
     return state, cwd, env
 
 
-def handshake(root, session_mode=None):
+def handshake(root, session_mode=None, *, bundle=None):
     state, cwd, env = private_state(root, session_mode)
-    adapter = root / "claude-agent-acp"
+    if bundle is None:
+        bundle = root
+    adapter = bundle / "claude-agent-acp"
     command = ["/usr/bin/sandbox-exec", "-D", f"ADAPTER={adapter}",
-               "-D", f"CLI={root / 'claude'}", "-D", f"STATE={state}",
+               "-D", f"CLI={bundle / 'claude'}", "-D", f"STATE={state}",
                "-f", str(Path(__file__).with_suffix(".sb").resolve()), str(adapter)]
     check_acp(command, cwd, env, session_mode)
 
@@ -256,7 +258,9 @@ def main():
                         "--max-time", "180", "--output", str(archive), f"{RELEASE}/{ASSET}"], check=True)
         unpack(archive, root)
         handshake(root)
-    print(f"ACP v1 initialize passed for {PACKAGE} {VERSION}; stdin EOF exited zero")
+        with tempfile.TemporaryDirectory(dir=root) as session_root:
+            handshake(Path(session_root), session_mode="member-temp", bundle=root)
+    print(f"ACP v1 initialize, signed-out session/new and clean EOF passed for {PACKAGE} {VERSION}")
 
 
 if __name__ == "__main__":
