@@ -24,7 +24,7 @@ and deliver signed policy updates. Machine rejects older policy revisions and
 refuses a protected launch when inputs change, qualification expires, revocation
 information is stale, evidence or its signer is unknown or revoked, or the
 required pairing is unavailable. Cooperative execution requires an explicit
-choice. The maximum age of revocation information remains open.
+choice. The owner selected a maximum revocation-snapshot age of 3,600 seconds. A snapshot exactly 3,600 seconds old is current; a missing, future-dated, or older snapshot refuses protected launch. Reissuing policy without a newly authenticated snapshot does not refresh it.
 [Platform decision record](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0102-protected-adapter-qualification.md).
 
 Required for **managed protected**:

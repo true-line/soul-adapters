@@ -1,0 +1,27 @@
+name: Qualification statement checks
+
+on:
+  pull_request:
+    paths:
+      - scripts/qualification-statement.mjs
+      - scripts/qualification-statement.test.mjs
+      - .github/workflows/qualification-statement.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  statement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the public event commit
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          git init --quiet
+          git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+      - name: Test exact-byte statement construction
+        run: node --test scripts/qualification-statement.test.mjs
