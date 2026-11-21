@@ -25,7 +25,7 @@ jobs:
     environment: qualification-release
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write
       id-token: write
     env:
       MACHINE_COMMIT: 10441e07de7bf33ceb1e5e47f74916ac67ff2694
@@ -177,8 +177,23 @@ jobs:
           NODE
           cd "$RUNNER_TEMP/evidence"
           find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: qualification-release-candidate
-          path: ${{ runner.temp }}/evidence/
-          if-no-files-found: error
+      - name: Archive verified evidence as a draft release
+        env:
+          EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/evidence"
+          sha256sum --check --strict SHA256SUMS
+          archive="$RUNNER_TEMP/qualification-release-candidate.tgz"
+          tar -czf "$archive" -C "$RUNNER_TEMP/evidence" .
+          sha256sum "$archive" > "$archive.sha256"
+          tag="qualification-candidate-$GITHUB_SHA-$EVIDENCE_COMMIT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release candidate tag already exists; refusing to overwrite" >&2
+            exit 1
+          fi
+          gh release create "$tag" "$archive" "$archive.sha256" \
+            --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes "Verified qualification release candidate. Source: $GITHUB_SHA. Physical evidence: $EVIDENCE_COMMIT. Draft only; protected launch and Stage 2a acceptance require separate approval."
