@@ -187,7 +187,7 @@ jobs:
           sha256sum --check --strict SHA256SUMS
           archive="$RUNNER_TEMP/qualification-release-candidate.tgz"
           tar -czf "$archive" -C "$RUNNER_TEMP/evidence" .
-          sha256sum "$archive" > "$archive.sha256"
+          (cd "$RUNNER_TEMP" && sha256sum qualification-release-candidate.tgz > qualification-release-candidate.tgz.sha256)
           tag="qualification-candidate-$GITHUB_SHA-$EVIDENCE_COMMIT"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release candidate tag already exists; refusing to overwrite" >&2
