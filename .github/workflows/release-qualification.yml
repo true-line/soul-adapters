@@ -76,6 +76,30 @@ jobs:
             -protected-envelope "$RUNNER_TEMP/evidence/protected-envelope.json" \
             -cooperative-envelope "$RUNNER_TEMP/evidence/cooperative-envelope.json" \
             > "$RUNNER_TEMP/evidence/preflight.json"
+      - name: Preserve exact authenticated host report bytes
+        run: |
+          set -euo pipefail
+          node - "$RUNNER_TEMP/evidence" <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const dir = process.argv[2];
+          const preflight = JSON.parse(fs.readFileSync(dir + '/preflight.json', 'utf8'));
+          fs.mkdirSync(dir + '/qualification');
+          for (const [profile, stem] of [['protected', 'protected'], ['cooperative', 'cooperative']]) {
+            const envelope = JSON.parse(fs.readFileSync(dir + '/' + stem + '-envelope.json', 'utf8'));
+            const encoded = envelope.report_base64url;
+            if (typeof encoded !== 'string' || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
+              throw new Error('host report is not canonical base64url');
+            }
+            const raw = Buffer.from(encoded, 'base64url');
+            const digest = 'sha256:' + crypto.createHash('sha256').update(raw).digest('hex');
+            if (raw.toString('base64url') !== encoded ||
+                digest !== preflight[profile + '_report_sha256']) {
+              throw new Error('released host report differs from Machine preflight');
+            }
+            fs.writeFileSync(dir + '/qualification/' + stem + '.report.json', raw);
+          }
+          NODE
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: v3.1.4
@@ -114,7 +138,7 @@ jobs:
             --trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main"
-          sha256sum "$RUNNER_TEMP/evidence/"*.json > "$RUNNER_TEMP/evidence/SHA256SUMS"
+          sha256sum "$RUNNER_TEMP/evidence/"*.json "$RUNNER_TEMP/evidence/qualification/"*.json > "$RUNNER_TEMP/evidence/SHA256SUMS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qualification-release-candidate
