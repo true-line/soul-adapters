@@ -161,6 +161,17 @@ doesn't exercise HQ's broker protocol, member binding, provider authorization,
 catalog discovery or production accounting. ACP's separate `providers/set`
 catalog client is outside this native-mode check.
 
+Add `--direct-control` for a stock CLI direct-only comparison followed by its
+ordinary assigned-Unix-broker turn. A fixture-owned loopback listener confirms
+it is reachable before and after the direct invocation. Under the same pinned
+Machine profile, the direct invocation has a short timeout and zero configured
+retries, must report a connection error, and must produce no listener connection.
+The brokered invocation must complete its streamed turn. The client error is
+not evidence of a particular OS errno; Machine's separate
+[`darwin-harness-egress.py`](https://github.com/true-line/agent-bot-machine/blob/e2537d299cc677a2c29a6e7719036d103048dcc2/tests/fixtures/darwin-harness-egress.py)
+checks the profile's permission refusal. This is a disposable component check,
+not a Machine-supervised vendor launch or a protected T03 qualification.
+
 Add `--read-fixture` to exercise a tool round trip in each stock client. The
 fixture creates one private text file and configures only the built-in `Read`
 tool, with consent for that exact file. The first synthetic Messages response
