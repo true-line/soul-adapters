@@ -10,3 +10,11 @@ Fields every package declares in `manifest.json`:
 - `state_redirect` — whether native state honors the member's private root
 - `cost_bound` — `exact`, `estimate`, or `none`
 - `session_reuse` — route changes under which native session reuse is supported
+
+## Qualification references
+
+The current v1 contract requires `profiles_qualified: []`. For a future
+protected claim, the entry references the signed qualification attestation.
+Its subject digest identifies the exact `qualification.json` bytes for the
+measured inputs and profile. The [qualification guide](QUALIFICATION.md)
+describes the evidence, signers and separate local installation approval.
