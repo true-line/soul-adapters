@@ -12,13 +12,37 @@ function digest(bytes) {
   return 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 }
 
-export function buildStatement(qualificationBytes, preflight, sourceCommit, expiresAt, now = new Date()) {
+export function buildStatement(qualificationBytes, preflight, policyEnvelope, sourceCommit, expiresAt, now = new Date()) {
   if (!Buffer.isBuffer(qualificationBytes) || qualificationBytes.length === 0 ||
       qualificationBytes.length > 1 << 20 || !COMMIT.test(sourceCommit) ||
       !preflight || preflight.qualification_sha256 !== digest(qualificationBytes) ||
       preflight.protected_profile !== 'managed-protected' ||
       preflight.cooperative_profile !== 'managed-cooperative') {
     throw new Error('release inputs do not match verified qualification bytes');
+  }
+  // Machine preflight authenticates the envelope; this comparison binds its
+  // decoded release identity to the current workflow before statement signing.
+  const encoded = policyEnvelope?.policy_base64url;
+  if (typeof encoded !== 'string' || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
+    throw new Error('verified owner policy is required');
+  }
+  const policyBytes = Buffer.from(encoded, 'base64url');
+  if (policyBytes.toString('base64url') !== encoded) {
+    throw new Error('owner policy encoding is not canonical');
+  }
+  let policy;
+  try {
+    policy = JSON.parse(policyBytes.toString('utf8'));
+  } catch {
+    throw new Error('owner policy payload is invalid JSON');
+  }
+  const release = policy.release_workflow;
+  if (release?.repository !== 'true-line/soul-adapters' || release.workflow_path !== WORKFLOW ||
+      release.source_commit !== sourceCommit ||
+      release.oidc_issuer !== 'https://token.actions.githubusercontent.com' ||
+      release.certificate_identity !==
+        'https://github.com/true-line/soul-adapters/' + WORKFLOW + '@refs/heads/main') {
+    throw new Error('verified owner policy does not pin this release workflow');
   }
   const expiry = new Date(expiresAt);
   if (!Number.isFinite(expiry.getTime()) || expiry <= now || expiry.toISOString() !== expiresAt) {
@@ -59,13 +83,14 @@ export function buildStatement(qualificationBytes, preflight, sourceCommit, expi
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.length !== 6) {
-    throw new Error('usage: qualification-statement.mjs QUALIFICATION PREFLIGHT SOURCE_COMMIT EXPIRES_AT');
+  if (process.argv.length !== 7) {
+    throw new Error('usage: qualification-statement.mjs QUALIFICATION PREFLIGHT POLICY_ENVELOPE SOURCE_COMMIT EXPIRES_AT');
   }
-  const [qualificationPath, preflightPath, commit, expires] = process.argv.slice(2);
+  const [qualificationPath, preflightPath, policyPath, commit, expires] = process.argv.slice(2);
   const result = buildStatement(
     readFileSync(qualificationPath),
     JSON.parse(readFileSync(preflightPath, 'utf8')),
+    JSON.parse(readFileSync(policyPath, 'utf8')),
     commit,
     expires,
   );
