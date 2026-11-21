@@ -19,13 +19,22 @@ on:
 permissions: {}
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require protected main
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
   release:
-    if: github.ref == 'refs/heads/main'
+    needs: gate
     runs-on: ubuntu-latest
     environment: qualification-release
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
       id-token: write
     env:
       MACHINE_COMMIT: 10441e07de7bf33ceb1e5e47f74916ac67ff2694
@@ -39,7 +48,7 @@ jobs:
           git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
           git checkout --quiet --detach FETCH_HEAD
-      - name: Fetch reviewed evidence and Machine verifier
+      - name: Pin reviewed evidence and Machine verifier
         env:
           EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
           EVIDENCE_DIR: ${{ inputs.evidence_dir }}
@@ -50,7 +59,8 @@ jobs:
           [[ "$EVIDENCE_DIR" =~ ^reports/[A-Za-z0-9._/-]{1,200}$ ]]
           [[ "/$EVIDENCE_DIR/" != *"/../"* ]]
           [[ "/$EVIDENCE_DIR/" != *"/./"* ]]
-          mkdir -p "$RUNNER_TEMP/evidence" "$RUNNER_TEMP/machine" "$RUNNER_TEMP/conformance"
+          install -d -m 700 "$RUNNER_TEMP/private"
+          mkdir -p "$RUNNER_TEMP/machine" "$RUNNER_TEMP/conformance"
           git -C "$RUNNER_TEMP/machine" init --quiet
           git -C "$RUNNER_TEMP/machine" -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/agent-bot-machine.git "$MACHINE_COMMIT"
           test "$(git -C "$RUNNER_TEMP/machine" rev-parse FETCH_HEAD)" = "$MACHINE_COMMIT"
@@ -58,29 +68,40 @@ jobs:
           test -s "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex"
           test -s "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt"
           test -s "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json"
+          test -s "$RUNNER_TEMP/machine/trust/qualification/souls-trusted-root.json"
           git -C "$RUNNER_TEMP/conformance" init --quiet
           git -C "$RUNNER_TEMP/conformance" -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-conformance.git "$EVIDENCE_COMMIT"
           test "$(git -C "$RUNNER_TEMP/conformance" rev-parse FETCH_HEAD)" = "$EVIDENCE_COMMIT"
-          for name in qualification.json protected-envelope.json cooperative-envelope.json policy-envelope.json; do
-            git -C "$RUNNER_TEMP/conformance" show "$EVIDENCE_COMMIT:$EVIDENCE_DIR/$name" > "$RUNNER_TEMP/evidence/$name"
-            test -s "$RUNNER_TEMP/evidence/$name"
-          done
+          # The conformance commit supplies reviewed references and digests.
+          # Exact host and owner-signed payloads are fetched from private
+          # immutable staging, never from this public repository.
+      - name: Hold for approved private evidence fetch
+        run: |
+          set -euo pipefail
+          echo 'Private host, owner-policy and Souls asset fetch is not configured' >&2
+          exit 1
       - name: Verify fixed owner policy and physical host reports
         run: |
           set -euo pipefail
+          test -s "$RUNNER_TEMP/private/souls-package.tgz"
+          test -s "$RUNNER_TEMP/private/souls-build-receipt.bundle.json"
           cd "$RUNNER_TEMP/machine"
           go run ./cmd/mm-qualification-preflight \
+            -bridge-v2 \
+            -souls-build-bundle "$RUNNER_TEMP/private/souls-build-receipt.bundle.json" \
+            -souls-package "$RUNNER_TEMP/private/souls-package.tgz" \
+            -souls-trusted-root trust/qualification/souls-trusted-root.json \
             -owner-root trust/qualification/owner-root.hex \
             -owner-key-id "$(cat trust/qualification/owner-key-id.txt)" \
-            -policy-envelope "$RUNNER_TEMP/evidence/policy-envelope.json" \
-            -qualification "$RUNNER_TEMP/evidence/qualification.json" \
-            -protected-envelope "$RUNNER_TEMP/evidence/protected-envelope.json" \
-            -cooperative-envelope "$RUNNER_TEMP/evidence/cooperative-envelope.json" \
-            > "$RUNNER_TEMP/evidence/preflight.json"
+            -policy-envelope "$RUNNER_TEMP/private/policy-envelope.json" \
+            -qualification "$RUNNER_TEMP/private/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/private/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/private/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/private/preflight.json"
       - name: Preserve exact authenticated host report bytes
         run: |
           set -euo pipefail
-          node - "$RUNNER_TEMP/evidence" <<'NODE'
+          node - "$RUNNER_TEMP/private" <<'NODE'
           const fs = require('node:fs');
           const crypto = require('node:crypto');
           const dir = process.argv[2];
@@ -115,16 +136,19 @@ jobs:
           EXPIRES_AT: ${{ inputs.expires_at }}
         run: |
           set -euo pipefail
-          cp "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex" "$RUNNER_TEMP/evidence/owner-root.hex"
-          cp "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt" "$RUNNER_TEMP/evidence/owner-key-id.txt"
-          cp "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json" "$RUNNER_TEMP/evidence/trusted-root.json"
+          cp "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex" "$RUNNER_TEMP/private/owner-root.hex"
+          cp "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt" "$RUNNER_TEMP/private/owner-key-id.txt"
+          cp "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json" "$RUNNER_TEMP/private/trusted-root.json"
+          cp "$RUNNER_TEMP/machine/trust/qualification/souls-trusted-root.json" "$RUNNER_TEMP/private/souls-trusted-root.json"
           node scripts/qualification-statement.mjs \
-            "$RUNNER_TEMP/evidence/qualification.json" \
-            "$RUNNER_TEMP/evidence/preflight.json" \
-            "$RUNNER_TEMP/evidence/policy-envelope.json" \
+            "$RUNNER_TEMP/private/qualification.json" \
+            "$RUNNER_TEMP/private/preflight.json" \
+            "$RUNNER_TEMP/private/policy-envelope.json" \
+            "$RUNNER_TEMP/private/protected-envelope.json" \
+            "$RUNNER_TEMP/private/cooperative-envelope.json" \
             "$GITHUB_SHA" "$EXPIRES_AT" \
-            > "$RUNNER_TEMP/evidence/statement.json"
-          node - "$RUNNER_TEMP/evidence/policy-envelope.json" "$RUNNER_TEMP/evidence/trusted-root.json" <<'NODE'
+            > "$RUNNER_TEMP/private/statement.json"
+          node - "$RUNNER_TEMP/private/policy-envelope.json" "$RUNNER_TEMP/private/trusted-root.json" <<'NODE'
           const fs = require('node:fs');
           const crypto = require('node:crypto');
           const envelope = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -135,6 +159,14 @@ jobs:
             throw new Error('Sigstore trusted root differs from owner-signed policy');
           }
           NODE
+      - name: Hold for private staging and Rekor approval
+        run: |
+          set -euo pipefail
+          # Do not issue OIDC or write a public transparency entry until the
+          # immutable private sink, read-back check, retention and allowed
+          # public Statement metadata have been reviewed.
+          echo 'Private staging and public Rekor metadata are not approved' >&2
+          exit 1
       - name: Sign exact release Statement
         env:
           EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
@@ -142,28 +174,32 @@ jobs:
         run: |
           set -euo pipefail
           cosign attest-blob \
-            --statement "$RUNNER_TEMP/evidence/statement.json" \
-            --bundle "$RUNNER_TEMP/evidence/bundle.json" \
-            --yes "$RUNNER_TEMP/evidence/qualification.json"
-          cosign verify-blob-attestation "$RUNNER_TEMP/evidence/qualification.json" \
-            --bundle "$RUNNER_TEMP/evidence/bundle.json" \
-            --trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
-            --type https://true-line.ai/soul-contracts/adapter/v1/macos-protected-qualification \
+            --statement "$RUNNER_TEMP/private/statement.json" \
+            --bundle "$RUNNER_TEMP/private/bundle.json" \
+            --yes "$RUNNER_TEMP/private/qualification.json"
+          cosign verify-blob-attestation "$RUNNER_TEMP/private/qualification.json" \
+            --bundle "$RUNNER_TEMP/private/bundle.json" \
+            --trusted-root "$RUNNER_TEMP/private/trusted-root.json" \
+            --type https://true-line.ai/soul-contracts/adapter/v2/macos-protected-qualification \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main" > "$RUNNER_TEMP/evidence/cosign-verification.txt"
-          bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/evidence/bundle.json" | cut -d ' ' -f 1)"
+            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main" > "$RUNNER_TEMP/private/cosign-verification.txt"
+          bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/private/bundle.json" | cut -d ' ' -f 1)"
           cd "$RUNNER_TEMP/machine"
           go run ./cmd/mm-qualification-verify-release \
-            -owner-root "$RUNNER_TEMP/evidence/owner-root.hex" \
-            -owner-key-id "$(cat "$RUNNER_TEMP/evidence/owner-key-id.txt")" \
-            -policy-envelope "$RUNNER_TEMP/evidence/policy-envelope.json" \
-            -trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
-            -bundle "$RUNNER_TEMP/evidence/bundle.json" \
+            -bridge-v2 \
+            -souls-build-bundle "$RUNNER_TEMP/private/souls-build-receipt.bundle.json" \
+            -souls-package "$RUNNER_TEMP/private/souls-package.tgz" \
+            -souls-trusted-root "$RUNNER_TEMP/private/souls-trusted-root.json" \
+            -owner-root "$RUNNER_TEMP/private/owner-root.hex" \
+            -owner-key-id "$(cat "$RUNNER_TEMP/private/owner-key-id.txt")" \
+            -policy-envelope "$RUNNER_TEMP/private/policy-envelope.json" \
+            -trusted-root "$RUNNER_TEMP/private/trusted-root.json" \
+            -bundle "$RUNNER_TEMP/private/bundle.json" \
             -bundle-sha256 "$bundle_sha" \
-            -qualification "$RUNNER_TEMP/evidence/qualification.json" \
-            -protected-envelope "$RUNNER_TEMP/evidence/protected-envelope.json" \
-            -cooperative-envelope "$RUNNER_TEMP/evidence/cooperative-envelope.json" \
-            > "$RUNNER_TEMP/evidence/offline-verification.json"
+            -qualification "$RUNNER_TEMP/private/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/private/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/private/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/private/offline-verification.json"
           node - <<'NODE'
           const fs = require('node:fs');
           const data = {
@@ -178,34 +214,16 @@ jobs:
             oidc_issuer: 'https://token.actions.githubusercontent.com',
             certificate_identity: 'https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main',
           };
-          fs.writeFileSync(process.env.RUNNER_TEMP + '/evidence/source.json', JSON.stringify(data) + '\n');
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/private/source.json', JSON.stringify(data) + '\n');
           NODE
-          cd "$RUNNER_TEMP/evidence"
+          cd "$RUNNER_TEMP/private"
           find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-      - name: Archive verified evidence as a draft release
-        env:
-          EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
-          GH_TOKEN: ${{ github.token }}
+      - name: Hold for signed bundle private upload
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/evidence"
-          sha256sum --check --strict SHA256SUMS
-          archive="$RUNNER_TEMP/qualification-release-candidate.tgz"
-          tar -czf "$archive" -C "$RUNNER_TEMP/evidence" .
-          (cd "$RUNNER_TEMP" && sha256sum qualification-release-candidate.tgz > qualification-release-candidate.tgz.sha256)
-          tag="qualification-candidate-$GITHUB_SHA-$EVIDENCE_COMMIT"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release candidate already exists; refusing to overwrite" >&2
-            exit 1
-          fi
-          # Creating the ref is atomic: an existing tag, including one left by
-          # a partial run without a Release, makes this command fail closed.
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
-          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha)"
-          test "$tag_sha" = "$GITHUB_SHA"
-          gh release create "$tag" "$archive" "$archive.sha256" \
-            --repo "$GITHUB_REPOSITORY" --draft --verify-tag --target "$GITHUB_SHA" \
-            --title "$tag" \
-            --notes "Verified qualification release candidate. Source: $GITHUB_SHA. Physical evidence: $EVIDENCE_COMMIT. Draft only; protected launch and Stage 2a acceptance require separate approval."
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha)" = "$GITHUB_SHA"
+          # Exact host reports and signatures, owner policy, Souls package,
+          # build receipt and qualification bytes remain private pilot assets.
+          # Replace this hold only after the signed bundle and exact verifier
+          # outputs are stored immutably and independently read back by hash.
+          echo 'Signed bundle private upload is not configured; refusing release upload' >&2
+          exit 1

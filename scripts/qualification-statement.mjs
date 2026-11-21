@@ -5,20 +5,59 @@ import { pathToFileURL } from 'node:url';
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
-const PREDICATE = 'https://true-line.ai/soul-contracts/adapter/v1/macos-protected-qualification';
+const PREDICATE = 'https://true-line.ai/soul-contracts/adapter/v2/macos-protected-qualification';
+const SOULS_PREDICATE = 'https://true-line.ai/soul-contracts/adapter/v2/souls-build';
 const WORKFLOW = '.github/workflows/release-qualification.yml';
+const PURPOSES = {
+  protected_report: { version: 2, purpose: 'agent-bot/qualification-host-report/v2',
+    payload: 'qualification/protected.report.json', signature: 'protected-envelope.json' },
+  cooperative_report: { version: 1, purpose: 'agent-bot/qualification-host-report/v1',
+    payload: 'qualification/cooperative.report.json', signature: 'cooperative-envelope.json' },
+};
 
 function digest(bytes) {
   return 'sha256:' + createHash('sha256').update(bytes).digest('hex');
 }
 
-export function buildStatement(qualificationBytes, preflight, policyEnvelope, sourceCommit, expiresAt, now = new Date()) {
+function boundReport(value, binding, payloadSHA, envelopeSHA, envelopeBytes) {
+  if (!Buffer.isBuffer(envelopeBytes) || envelopeBytes.length === 0 ||
+      envelopeBytes.length > (2 << 20) || !SHA.test(payloadSHA) ||
+      !SHA.test(envelopeSHA) || envelopeSHA !== digest(envelopeBytes) ||
+      value?.report_schema_version !== binding.version ||
+      value?.signature_purpose !== binding.purpose ||
+      value?.payload?.uri !== binding.payload || value?.payload?.sha256 !== payloadSHA ||
+      value?.signature?.uri !== binding.signature ||
+      value?.signature?.sha256 !== envelopeSHA) {
+    throw new Error('verified report and envelope do not match qualification.json');
+  }
+  return {
+    report_schema_version: binding.version,
+    signature_purpose: binding.purpose,
+    payload: { uri: binding.payload, sha256: payloadSHA },
+    signature: { uri: binding.signature, sha256: envelopeSHA },
+  };
+}
+
+export function buildStatement(qualificationBytes, preflight, policyEnvelopeBytes,
+    protectedEnvelopeBytes, cooperativeEnvelopeBytes, sourceCommit, expiresAt, now = new Date()) {
   if (!Buffer.isBuffer(qualificationBytes) || qualificationBytes.length === 0 ||
-      qualificationBytes.length > 1 << 20 || !COMMIT.test(sourceCommit) ||
-      !preflight || preflight.qualification_sha256 !== digest(qualificationBytes) ||
+      qualificationBytes.length > (1 << 20) || !COMMIT.test(sourceCommit) ||
+      !preflight || preflight.schema_version !== 2 ||
+      preflight.qualification_sha256 !== digest(qualificationBytes) ||
       preflight.protected_profile !== 'managed-protected' ||
       preflight.cooperative_profile !== 'managed-cooperative') {
     throw new Error('release inputs do not match verified qualification bytes');
+  }
+  if (!Buffer.isBuffer(policyEnvelopeBytes) || policyEnvelopeBytes.length === 0 ||
+      policyEnvelopeBytes.length > (2 << 20) ||
+      preflight.policy_envelope_sha256 !== digest(policyEnvelopeBytes)) {
+    throw new Error('owner policy envelope differs from authenticated preflight');
+  }
+  let policyEnvelope;
+  try {
+    policyEnvelope = JSON.parse(policyEnvelopeBytes.toString('utf8'));
+  } catch {
+    throw new Error('owner policy envelope is invalid JSON');
   }
   // Machine preflight authenticates the envelope; this comparison binds its
   // decoded release identity to the current workflow before statement signing.
@@ -30,11 +69,20 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelope, so
   if (policyBytes.toString('base64url') !== encoded) {
     throw new Error('owner policy encoding is not canonical');
   }
+  if (preflight.policy_sha256 !== digest(policyBytes) ||
+      policyEnvelope.policy_sha256 !== preflight.policy_sha256) {
+    throw new Error('owner policy differs from authenticated preflight');
+  }
   let policy;
   try {
     policy = JSON.parse(policyBytes.toString('utf8'));
   } catch {
     throw new Error('owner policy payload is invalid JSON');
+  }
+  if (policyEnvelope.schema_version !== 2 ||
+      policyEnvelope.purpose !== 'agent-bot/qualification-policy/v2' ||
+      policy.contract !== 'control/v2' || policy.kind !== 'qualification-trust-policy') {
+    throw new Error('verified v2 owner policy is required');
   }
   const release = policy.release_workflow;
   if (release?.repository !== 'true-line/soul-adapters' || release.workflow_path !== WORKFLOW ||
@@ -57,24 +105,65 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelope, so
   } catch {
     throw new Error('qualification.json is invalid JSON');
   }
-  if (qualification.profile_in_force !== 'managed-protected') {
+  if (qualification.schema_version !== 2 || qualification.profile_in_force !== 'managed-protected') {
     throw new Error('qualification.json does not name the protected profile');
   }
   const protectedSHA = preflight.protected_report_sha256;
   const cooperativeSHA = preflight.cooperative_report_sha256;
-  if (!SHA.test(protectedSHA) || !SHA.test(cooperativeSHA) || protectedSHA === cooperativeSHA ||
-      qualification.conformance?.report?.sha256 !== protectedSHA) {
-    throw new Error('verified protected report does not match qualification.json');
+  if (!SHA.test(protectedSHA) || !SHA.test(cooperativeSHA) || protectedSHA === cooperativeSHA) {
+    throw new Error('verified reports are missing or identical');
+  }
+  const hostReports = {
+    protected_report: boundReport(qualification.conformance?.protected_report,
+      PURPOSES.protected_report, protectedSHA, preflight.protected_envelope_sha256,
+      protectedEnvelopeBytes),
+    cooperative_report: boundReport(qualification.conformance?.cooperative_report,
+      PURPOSES.cooperative_report, cooperativeSHA, preflight.cooperative_envelope_sha256,
+      cooperativeEnvelopeBytes),
+  };
+  const soulsBuild = qualification.souls_build;
+  if (soulsBuild?.source_repository !== 'true-line/agent-bot-souls' ||
+      !COMMIT.test(soulsBuild.source_commit) || !COMMIT.test(soulsBuild.source_tree) ||
+      !SHA.test(soulsBuild.builder_sha256) || !SHA.test(soulsBuild.toolchain_sha256) ||
+      !SHA.test(soulsBuild.package_sha256) || !SHA.test(soulsBuild.receipt?.sha256) ||
+      typeof soulsBuild.receipt?.uri !== 'string' || !soulsBuild.receipt.uri ||
+      typeof soulsBuild.workflow !== 'string' ||
+      !/^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/.test(soulsBuild.workflow) ||
+      !/^[1-9][0-9]{0,19}$/.test(soulsBuild.run_id) ||
+      !Number.isSafeInteger(soulsBuild.run_attempt) || soulsBuild.run_attempt < 1) {
+    throw new Error('Souls build provenance is missing or malformed');
+  }
+  // Machine emits these fields after authenticating the separate build receipt
+  // and measuring the Souls package. A claim in qualification.json alone is
+  // insufficient to sign a release Statement.
+  if (preflight.souls_build_bundle_sha256 !== soulsBuild.receipt.sha256 ||
+      preflight.souls_package_sha256 !== soulsBuild.package_sha256 ||
+      preflight.souls_source_tree !== soulsBuild.source_tree) {
+    throw new Error('Souls build does not match authenticated preflight');
+  }
+  const soulsWorkflow = policy.souls_build_workflow;
+  if (soulsWorkflow?.repository !== soulsBuild.source_repository ||
+      soulsWorkflow.workflow_path !== soulsBuild.workflow ||
+      soulsWorkflow.source_commit !== soulsBuild.source_commit ||
+      soulsWorkflow.source_tree !== soulsBuild.source_tree ||
+      soulsWorkflow.builder_sha256 !== soulsBuild.builder_sha256 ||
+      soulsWorkflow.toolchain_sha256 !== soulsBuild.toolchain_sha256 ||
+      soulsWorkflow.oidc_issuer !== 'https://token.actions.githubusercontent.com' ||
+      soulsWorkflow.certificate_identity !==
+        'https://github.com/true-line/agent-bot-souls/' + soulsBuild.workflow + '@refs/heads/main' ||
+      soulsWorkflow.receipt_predicate_type !== SOULS_PREDICATE ||
+      soulsWorkflow.bundle_media_type !== 'application/vnd.dev.sigstore.bundle.v0.3+json' ||
+      soulsWorkflow.dsse_payload_type !== 'application/vnd.in-toto+json' ||
+      !SHA.test(soulsWorkflow.trust_root_sha256)) {
+    throw new Error('owner policy does not pin the authenticated Souls build');
   }
   return {
     _type: 'https://in-toto.io/Statement/v1',
     subject: [{ name: 'qualification.json', digest: { sha256: digest(qualificationBytes).slice(7) } }],
     predicateType: PREDICATE,
     predicate: {
-      host_reports: [
-        { uri: 'qualification/protected.report.json', sha256: protectedSHA },
-        { uri: 'qualification/cooperative.report.json', sha256: cooperativeSHA },
-      ],
+      host_reports: hostReports,
+      souls_build: soulsBuild,
       expires_at: expiresAt,
       release: {
         source_repository: 'true-line/soul-adapters',
@@ -86,14 +175,16 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelope, so
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.length !== 7) {
-    throw new Error('usage: qualification-statement.mjs QUALIFICATION PREFLIGHT POLICY_ENVELOPE SOURCE_COMMIT EXPIRES_AT');
+  if (process.argv.length !== 9) {
+    throw new Error('usage: qualification-statement.mjs QUALIFICATION PREFLIGHT POLICY_ENVELOPE PROTECTED_ENVELOPE COOPERATIVE_ENVELOPE SOURCE_COMMIT EXPIRES_AT');
   }
-  const [qualificationPath, preflightPath, policyPath, commit, expires] = process.argv.slice(2);
+  const [qualificationPath, preflightPath, policyPath, protectedPath, cooperativePath, commit, expires] = process.argv.slice(2);
   const result = buildStatement(
     readFileSync(qualificationPath),
     JSON.parse(readFileSync(preflightPath, 'utf8')),
-    JSON.parse(readFileSync(policyPath, 'utf8')),
+    readFileSync(policyPath),
+    readFileSync(protectedPath),
+    readFileSync(cooperativePath),
     commit,
     expires,
   );
