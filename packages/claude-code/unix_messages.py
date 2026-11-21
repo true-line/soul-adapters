@@ -297,13 +297,41 @@ def acp_reply(child, reply_id, notice, deny_unexpected_tool=False):
     raise FixtureError("too many ACP notifications")
 
 
-def observe_acp(child, cwd, fixture):
+def observe_acp(child, cwd, fixture, *, check_load=False, load_session=None):
     write_rpc(child, REQUEST)
     initialized = acp_reply(child, 1, lambda _: None)
     require(initialized.get("protocolVersion") == 1
             and initialized["agentInfo"]["name"] == PACKAGE and initialized["agentInfo"]["version"] == VERSION,
             "unexpected ACP identity")
-    if fixture.read:
+    if check_load:
+        capabilities = initialized["agentCapabilities"]
+        require(capabilities.get("loadSession") is True, "ACP did not advertise session/load")
+        require(isinstance(capabilities.get("sessionCapabilities", {}).get("resume"), dict),
+                "ACP did not advertise session/resume")
+    if load_session:
+        replay = {"user_message_chunk": [], "agent_message_chunk": []}
+
+        def history(frame):
+            params = frame.get("params", {})
+            if frame["method"] == "session/update" and params.get("sessionId") == load_session:
+                update = params["update"]
+                content = update.get("content", {})
+                role = update["sessionUpdate"]
+                chunks = replay.get(role)
+                if chunks is not None and content.get("type") == "text":
+                    if role == "user_message_chunk":
+                        require(not replay["agent_message_chunk"], "ACP replayed the reply before the full prompt")
+                    chunks.append(content["text"])
+
+        write_rpc(child, {"id": 2, "method": "session/load", "params": {
+            "sessionId": load_session, "cwd": str(cwd), "mcpServers": [],
+        }})
+        acp_reply(child, 2, history)
+        require(tuple("".join(chunks) for chunks in replay.values()) == fixture.resume_history,
+                "ACP did not replay both messages from the saved session")
+        require(fixture.prompt_calls == 1, "ACP issued a prompt while loading the transcript")
+        session = load_session
+    elif fixture.read:
         write_rpc(child, {"id": 2, "method": "session/new", "params": {
             "cwd": str(cwd), "mcpServers": [],
             "_meta": {"claudeCode": {"options": {
@@ -348,6 +376,7 @@ def observe_acp(child, cwd, fixture):
                                                          for key in ("inputTokens", "outputTokens")),
                                   model_usage_present=bool(quota.get("model_usage")))
     child.stdin.close()
+    return session
 
 
 def observe_cli(child, _, fixture):
@@ -430,16 +459,12 @@ def check_transcript(home, session):
             if entry.get("sessionId") == session and entry.get("type") in ("user", "assistant")]
 
 
-def resume_cli(command, cwd, env, fixture):
-    def invoke(*arguments):
-        return run_client(command + ["--print", fixture.prompt, *arguments], cwd, env,
-                          subprocess.DEVNULL, observe_cli, fixture)
-
+def resume_session(env, fixture, start, reopen):
     home = Path(env["HOME"])
     require(not (home / ".claude/projects").exists(), "expected a fresh member home")
-    session = invoke()
+    session = start()
     require(isinstance(session, str) and str(UUID(session)) == session,
-            "CLI did not return a native session ID")
+            "client did not return a native session ID")
     first = (fixture.prompt, "".join(fixture.chunks))
     require(contains_turn(check_transcript(home, session), *first),
             "native transcript does not contain the first turn")
@@ -449,9 +474,27 @@ def resume_cli(command, cwd, env, fixture):
         fixture.prompt = "Return the resumed fixture response for " + secrets.token_hex(12)
         fixture.chunks = ("resumed-" + secrets.token_hex(12), "-complete")
         fixture.first_seen.clear()
-    require(invoke("--resume", session) == session, "CLI did not resume the same session")
+    require(reopen(session) == session, "client did not reopen the same session")
     require(contains_turn(check_transcript(home, session), fixture.prompt, "".join(fixture.chunks)),
             "native transcript does not contain the resumed turn")
+
+
+def resume_cli(command, cwd, env, fixture):
+    def invoke(*arguments):
+        return run_client(command + ["--print", fixture.prompt, *arguments], cwd, env,
+                          subprocess.DEVNULL, observe_cli, fixture)
+
+    resume_session(env, fixture, invoke, lambda session: invoke("--resume", session))
+
+
+def load_acp(command, cwd, env, fixture):
+    def invoke(session=None):
+        def observe(child, workdir, model):
+            return observe_acp(child, workdir, model, check_load=True, load_session=session)
+
+        return run_client(command, cwd, env, subprocess.PIPE, observe, fixture)
+
+    resume_session(env, fixture, invoke, invoke)
 
 
 def trial(root, profile, mode, read_fixture, hq_source=None, resume=False):
@@ -483,8 +526,11 @@ def trial(root, profile, mode, read_fixture, hq_source=None, resume=False):
                         command += ["--settings", json.dumps(fixture.read.settings)]
                     run_client(policy + command, cwd, env, subprocess.DEVNULL, observe_cli, fixture)
             else:
-                run_client(policy + [str(root / "claude-agent-acp")], cwd, env, subprocess.PIPE,
-                           observe_acp, fixture)
+                command = policy + [str(root / "claude-agent-acp")]
+                if resume:
+                    load_acp(command, cwd, env, fixture)
+                else:
+                    run_client(command, cwd, env, subprocess.PIPE, observe_acp, fixture)
         except FixtureError:
             if fixture.error is not None:
                 raise fixture.error from None
@@ -504,6 +550,8 @@ def trial(root, profile, mode, read_fixture, hq_source=None, resume=False):
                           **(fixture.read.shape if read_fixture else {}),
                           **({"native_transcript_in_member_home": True, "resumed_in_new_process": True,
                               "resumed_request_carried_history": True} if resume else {}),
+                          **({"acp_load_advertised": True, "acp_resume_advertised": True,
+                              "acp_load_replayed_history": True} if resume and mode == "acp" else {}),
                           **({"bound_hq_fixture": True, "modeled_turn_equal": True,
                               "completed_zero_cost_operations": 2} if hq_source else {})}))
 
@@ -515,6 +563,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--read-fixture", action="store_true", help="exercise one local Read and follow-up")
     mode.add_argument("--resume-fixture", action="store_true", help="persist and resume a native CLI session")
+    mode.add_argument("--acp-load-fixture", action="store_true", help="load a saved ACP session after a restart")
     parser.add_argument("--hq-source", type=Path, help="pinned HQ draft checkout for the optional bound bridge")
     args = parser.parse_args()
     require_guest()
@@ -534,9 +583,11 @@ def main():
         profile = root / "harness-egress.sb"
         shutil.copyfile(args.machine_profile, profile)
         verify(profile, PROFILE_SHA256)
-        for mode in (("cli",) if args.resume_fixture else ("cli", "acp")):
+        modes = ("cli",) if args.resume_fixture else ("acp",) if args.acp_load_fixture else ("cli", "acp")
+        for mode in modes:
             try:
-                trial(root, profile, mode, args.read_fixture, args.hq_source, args.resume_fixture)
+                trial(root, profile, mode, args.read_fixture, args.hq_source,
+                      args.resume_fixture or args.acp_load_fixture)
             except (FixtureError, BridgeError) as error:
                 raise SystemExit(f"{mode}: {error}") from None
             except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
