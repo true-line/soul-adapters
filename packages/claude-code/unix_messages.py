@@ -10,6 +10,7 @@ import secrets
 import select
 import shutil
 import signal
+import socket
 import socketserver
 import subprocess
 import sys
@@ -142,6 +143,21 @@ class MessagesFixture(socketserver.ThreadingUnixStreamServer):
     def handle_error(self, *_):
         error = sys.exc_info()[1]
         self.error = error if isinstance(error, FixtureError) else FixtureError("invalid fixture request")
+
+
+class DirectCanary(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), socketserver.BaseRequestHandler)
+        self.connections = 0
+        self.lock = threading.Lock()
+
+    def get_request(self):
+        client, address = super().get_request()
+        with self.lock:
+            self.connections += 1
+        return client, address
 
 
 class MessagesHandler(BaseHTTPRequestHandler):
@@ -417,7 +433,7 @@ def expired(*_):
     raise FixtureError("client deadline exceeded")
 
 
-def run_client(command, cwd, env, stdin, observe, fixture):
+def run_client(command, cwd, env, stdin, observe, fixture, *, expected_exit=0):
     with closing(select.kqueue()) as events, subprocess.Popen(
         command, cwd=cwd, env=env, stdin=stdin, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, start_new_session=True,
@@ -441,7 +457,7 @@ def run_client(command, cwd, env, stdin, observe, fixture):
                 pass
             status = child.wait(timeout=5)
             wait_for_process_group_exit(child.pid)
-        require(status == 0, "client did not exit zero")
+        require(status == expected_exit, "client exit did not match the expected result")
         return observation
 
 
@@ -556,6 +572,58 @@ def trial(root, profile, mode, read_fixture, hq_source=None, resume=False):
                               "completed_zero_cost_operations": 2} if hq_source else {})}))
 
 
+def direct_control(root, profile):
+    state = root / "direct-control"
+    state.mkdir()
+    _, cwd, env = private_state(state, "member-temp")
+    with DirectCanary() as canary:
+        server = threading.Thread(target=canary.serve_forever, daemon=True)
+        server.start()
+        try:
+            def reachable():
+                with socket.create_connection(canary.server_address, timeout=3) as client:
+                    require(client.recv(1) == b"", "unexpected canary response")
+
+            reachable()
+            env.update(ANTHROPIC_API_KEY=PLACEHOLDER,
+                       ANTHROPIC_BASE_URL=f"http://127.0.0.1:{canary.server_address[1]}",
+                       ANTHROPIC_MODEL=MODEL, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
+                       CLAUDE_CODE_MAX_RETRIES="0", API_TIMEOUT_MS="3000")
+            broker, member = state / "broker.sock", state / "member.sock"
+            command = ["/usr/bin/sandbox-exec", "-D", f"BROKER_SOCKET={broker}",
+                       "-D", f"MEMBER_SOCKET={member}", "-f", str(profile), str(root / "claude"),
+                       "--model", MODEL, "--output-format", "json", "--tools", "",
+                       "--print", "Return the fixture response.", "--no-session-persistence"]
+
+            def refused(child, _cwd, _fixture):
+                data = child.stdout.read(256 * 1024 + 1)
+                require(0 < len(data) <= 256 * 1024, "missing bounded direct-only result")
+                result = json.loads(data)
+                require(isinstance(result, dict) and result.get("type") == "result"
+                        and result.get("is_error") is True, "direct-only invocation did not report failure")
+                message = result.get("result")
+                require(isinstance(message, str) and "connect" in message.lower(),
+                        "direct-only client did not report a connection failure")
+                permission = "permission" in message.lower() or "eperm" in message.lower()
+                require(permission, "direct-only client did not report a permission-related failure")
+                return {"connection_error": True, "mentions_permission": True,
+                        "mentions_eperm": "eperm" in message.lower(),
+                        "mentions_loopback": "127.0.0.1" in message}
+
+            observed = run_client(command, cwd, env, subprocess.DEVNULL, refused, None, expected_exit=1)
+            reachable()
+            with canary.lock:
+                require(canary.connections == 2, "confined direct client reached the loopback canary")
+            print(json.dumps({"mode": "direct-control", "reachable_controls": 2,
+                              "confined_direct_connections": 0, "client_reported_error": True,
+                              **observed,
+                              "scope": "fixture-only; no protected-host qualification"}))
+        finally:
+            canary.shutdown()
+            server.join(timeout=5)
+            require(not server.is_alive(), "direct canary did not stop")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path, help="pinned v0.109.0 Darwin arm64 release zip")
@@ -564,6 +632,7 @@ def main():
     mode.add_argument("--read-fixture", action="store_true", help="exercise one local Read and follow-up")
     mode.add_argument("--resume-fixture", action="store_true", help="persist and resume a native CLI session")
     mode.add_argument("--acp-load-fixture", action="store_true", help="load a saved ACP session after a restart")
+    mode.add_argument("--direct-control", action="store_true", help="compare direct-only and assigned-broker fixture turns")
     parser.add_argument("--hq-source", type=Path, help="pinned HQ draft checkout for the optional bound bridge")
     args = parser.parse_args()
     require_guest()
@@ -583,6 +652,10 @@ def main():
         profile = root / "harness-egress.sb"
         shutil.copyfile(args.machine_profile, profile)
         verify(profile, PROFILE_SHA256)
+        if args.direct_control:
+            direct_control(root, profile)
+            trial(root, profile, "cli", False)
+            return
         modes = ("cli",) if args.resume_fixture else ("acp",) if args.acp_load_fixture else ("cli", "acp")
         for mode in modes:
             try:
