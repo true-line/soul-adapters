@@ -127,6 +127,8 @@ jobs:
           }
           NODE
       - name: Sign exact release Statement
+        env:
+          EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
         run: |
           set -euo pipefail
           cosign attest-blob \
@@ -137,8 +139,22 @@ jobs:
             --bundle "$RUNNER_TEMP/evidence/bundle.json" \
             --trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main"
-          sha256sum "$RUNNER_TEMP/evidence/"*.json "$RUNNER_TEMP/evidence/qualification/"*.json > "$RUNNER_TEMP/evidence/SHA256SUMS"
+            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main" > "$RUNNER_TEMP/evidence/cosign-verification.txt"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const data = {
+            schema_version: 1,
+            release_source_commit: process.env.GITHUB_SHA,
+            evidence_repository: 'true-line/soul-conformance',
+            evidence_commit: process.env.EVIDENCE_COMMIT,
+            machine_preflight_commit: process.env.MACHINE_COMMIT,
+            workflow: '.github/workflows/release-qualification.yml',
+            oidc_issuer: 'https://token.actions.githubusercontent.com',
+            certificate_identity: 'https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main',
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/evidence/source.json', JSON.stringify(data) + '\n');
+          NODE
+          find "$RUNNER_TEMP/evidence" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/evidence/SHA256SUMS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qualification-release-candidate
