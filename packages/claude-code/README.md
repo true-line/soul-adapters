@@ -28,6 +28,22 @@ compare the standard environment without that vendor setting. The probe
 only measures this unauthenticated offline exchange. Production sessions may
 require an authorized broker exchange or authenticated vendor state.
 
+For an already staged copy of the release, run the same probe as the intended
+non-root account:
+
+```sh
+python3 -B packages/claude-code/session.py --staged-bundle /absolute/path/to/versioned/bundle
+```
+
+Keep the release files named `claude-agent-acp` and `claude` in the same
+directory. Both must be readable and executable by the account. The probe
+checks both pinned file hashes before invoking the adapter. It leaves the
+bundle in place and creates the working directory, home, caches, and temporary
+state under fresh private scratch. The same offline profile applies. The
+result measures signed-out ACP startup at the staged path. The test profile
+permits reads of macOS ICU data files named `/usr/share/icu/icudt<major>l.dat`.
+It keeps other writes confined to private scratch and denies network access.
+
 ### Ordinary-user control in a disposable macOS guest
 
 This comparison gives the adapter ordinary guest filesystem and process access

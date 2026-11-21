@@ -149,11 +149,13 @@ def private_state(root, session_mode):
     return state, cwd, env
 
 
-def handshake(root, session_mode=None):
+def handshake(root, session_mode=None, *, bundle=None):
     state, cwd, env = private_state(root, session_mode)
-    adapter = root / "claude-agent-acp"
+    if bundle is None:
+        bundle = root
+    adapter = bundle / "claude-agent-acp"
     command = ["/usr/bin/sandbox-exec", "-D", f"ADAPTER={adapter}",
-               "-D", f"CLI={root / 'claude'}", "-D", f"STATE={state}",
+               "-D", f"CLI={bundle / 'claude'}", "-D", f"STATE={state}",
                "-f", str(Path(__file__).with_suffix(".sb").resolve()), str(adapter)]
     check_acp(command, cwd, env, session_mode)
 
