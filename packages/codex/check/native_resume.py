@@ -71,7 +71,7 @@ class InterruptHandler(FixtureHandler):
                 except ConnectionResetError:
                     self.server.stream_closed.set()
                 except socket.timeout:
-                    pass
+                    raise ValueError("provider stream remained open after cancellation") from None
                 return
 
 
