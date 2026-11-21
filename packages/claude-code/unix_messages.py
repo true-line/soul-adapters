@@ -296,12 +296,19 @@ def write_rpc(child, frame):
     child.stdin.flush()
 
 
-def acp_reply(child, reply_id, notice, deny_unexpected_tool=False):
+def acp_reply(child, reply_id, notice, deny_unexpected_tool=False, *, error_code=None):
     for _ in range(256):
         frame = read_frame(child.stdout)
         require(frame is not None, "ACP closed before replying")
         if "method" not in frame:
-            require(frame.get("id") == reply_id and "result" in frame, "ACP refused the request")
+            require(type(frame.get("id")) is int and frame["id"] == reply_id, "unexpected ACP reply ID")
+            if error_code is not None:
+                error = frame.get("error")
+                require(set(frame) == {"jsonrpc", "id", "error"} and isinstance(error, dict)
+                        and type(error.get("code")) is int and error["code"] == error_code,
+                        "ACP did not return the expected error")
+                return error
+            require("result" in frame, "ACP refused the request")
             return frame["result"]
         if "id" not in frame:
             notice(frame)
@@ -313,12 +320,17 @@ def acp_reply(child, reply_id, notice, deny_unexpected_tool=False):
     raise FixtureError("too many ACP notifications")
 
 
-def observe_acp(child, cwd, fixture, *, check_load=False, load_session=None):
+def initialize_acp(child):
     write_rpc(child, REQUEST)
     initialized = acp_reply(child, 1, lambda _: None)
     require(initialized.get("protocolVersion") == 1
             and initialized["agentInfo"]["name"] == PACKAGE and initialized["agentInfo"]["version"] == VERSION,
             "unexpected ACP identity")
+    return initialized
+
+
+def observe_acp(child, cwd, fixture, *, check_load=False, load_session=None):
+    initialized = initialize_acp(child)
     if check_load:
         capabilities = initialized["agentCapabilities"]
         require(capabilities.get("loadSession") is True, "ACP did not advertise session/load")
@@ -572,8 +584,30 @@ def trial(root, profile, mode, read_fixture, hq_source=None, resume=False):
                               "completed_zero_cost_operations": 2} if hq_source else {})}))
 
 
-def direct_control(root, profile):
-    state = root / "direct-control"
+def observe_direct_cli(child, _cwd, _fixture):
+    data = child.stdout.read(256 * 1024 + 1)
+    require(0 < len(data) <= 256 * 1024, "missing bounded direct-only CLI result")
+    result = json.loads(data)
+    require(isinstance(result, dict) and result.get("type") == "result"
+            and result.get("is_error") is True and isinstance(result.get("result"), str),
+            "direct-only CLI invocation did not report failure")
+    return result["result"]
+
+
+def observe_direct_acp(child, cwd, prompt):
+    initialize_acp(child)
+    session = check_session(child, cwd)
+    write_rpc(child, {"id": 3, "method": "session/prompt", "params": {
+        "sessionId": session, "prompt": [{"type": "text", "text": prompt}],
+    }})
+    error = acp_reply(child, 3, lambda _: None, error_code=-32603)
+    child.stdin.close()
+    require(len(child.stdout.read(256 * 1024 + 1)) <= 256 * 1024, "excess ACP output after EOF")
+    return json.dumps(error)
+
+
+def direct_control(root, profile, mode):
+    state = root / f"direct-{mode}"
     state.mkdir()
     _, cwd, env = private_state(state, "member-temp")
     with DirectCanary() as canary:
@@ -591,32 +625,26 @@ def direct_control(root, profile):
                        CLAUDE_CODE_MAX_RETRIES="0", API_TIMEOUT_MS="3000")
             broker, member = state / "broker.sock", state / "member.sock"
             command = ["/usr/bin/sandbox-exec", "-D", f"BROKER_SOCKET={broker}",
-                       "-D", f"MEMBER_SOCKET={member}", "-f", str(profile), str(root / "claude"),
-                       "--model", MODEL, "--output-format", "json", "--tools", "",
-                       "--print", "Return the fixture response.", "--no-session-persistence"]
-
-            def refused(child, _cwd, _fixture):
-                data = child.stdout.read(256 * 1024 + 1)
-                require(0 < len(data) <= 256 * 1024, "missing bounded direct-only result")
-                result = json.loads(data)
-                require(isinstance(result, dict) and result.get("type") == "result"
-                        and result.get("is_error") is True, "direct-only invocation did not report failure")
-                message = result.get("result")
-                require(isinstance(message, str) and "connect" in message.lower(),
-                        "direct-only client did not report a connection failure")
-                permission = "permission" in message.lower() or "eperm" in message.lower()
-                require(permission, "direct-only client did not report a permission-related failure")
-                return {"connection_error": True, "mentions_permission": True,
-                        "mentions_eperm": "eperm" in message.lower(),
-                        "mentions_loopback": "127.0.0.1" in message}
-
-            observed = run_client(command, cwd, env, subprocess.DEVNULL, refused, None, expected_exit=1)
+                       "-D", f"MEMBER_SOCKET={member}", "-f", str(profile)]
+            prompt = "Return the fixture response."
+            if mode == "cli":
+                command += [str(root / "claude"), "--model", MODEL, "--output-format", "json", "--tools", "",
+                            "--print", prompt, "--no-session-persistence"]
+                message = run_client(command, cwd, env, subprocess.DEVNULL, observe_direct_cli, None, expected_exit=1)
+            else:
+                command.append(str(root / "claude-agent-acp"))
+                message = run_client(command, cwd, env, subprocess.PIPE, observe_direct_acp, prompt)
+            message = message.lower()
+            require("connect" in message and ("permission" in message or "eperm" in message),
+                    "direct-only client did not report a permission-related connection failure")
             reachable()
             with canary.lock:
                 require(canary.connections == 2, "confined direct client reached the loopback canary")
-            print(json.dumps({"mode": "direct-control", "reachable_controls": 2,
+            print(json.dumps({"mode": "direct-control", "client": mode, "reachable_controls": 2,
                               "confined_direct_connections": 0, "client_reported_error": True,
-                              **observed,
+                              "connection_error": True, "mentions_permission": True,
+                              "mentions_eperm": "eperm" in message, "mentions_loopback": "127.0.0.1" in message,
+                              **({"acp_session_created": True, "acp_prompt_error": -32603} if mode == "acp" else {}),
                               "scope": "fixture-only; no protected-host qualification"}))
         finally:
             canary.shutdown()
@@ -652,13 +680,11 @@ def main():
         profile = root / "harness-egress.sb"
         shutil.copyfile(args.machine_profile, profile)
         verify(profile, PROFILE_SHA256)
-        if args.direct_control:
-            direct_control(root, profile)
-            trial(root, profile, "cli", False)
-            return
         modes = ("cli",) if args.resume_fixture else ("acp",) if args.acp_load_fixture else ("cli", "acp")
         for mode in modes:
             try:
+                if args.direct_control:
+                    direct_control(root, profile, mode)
                 trial(root, profile, mode, args.read_fixture, args.hq_source,
                       args.resume_fixture or args.acp_load_fixture)
             except (FixtureError, BridgeError) as error:
