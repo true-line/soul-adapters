@@ -50,13 +50,14 @@ def exchange(child, request_id, method, params):
     raise ValueError(f"{method}: response limit exceeded")
 
 
-def initialize(child, wire):
+def initialize(child, wire, *, gateway=False):
+    caps = {"auth": {"_meta": {"gateway": True}}} if gateway else {}
     info = {"name": "signed-out-check", "version": "1.0.0"}
     if wire == 1:
-        params = {"protocolVersion": wire, "clientInfo": info, "clientCapabilities": {}}
+        params = {"protocolVersion": wire, "clientInfo": info, "clientCapabilities": caps}
         info_key, method_key = "agentInfo", "id"
     else:
-        params = {"protocolVersion": wire, "info": info, "capabilities": {}}
+        params = {"protocolVersion": wire, "info": info, "capabilities": caps}
         info_key, method_key = "info", "methodId"
     reply = exchange(child, 1, "initialize", params)
     result = reply.get("result", {})
@@ -65,7 +66,8 @@ def initialize(child, wire):
             or result["protocolVersion"] != wire or agent.get("name") != PACKAGE or agent.get("version") != "2.8.0"):
         raise ValueError("unexpected ACP version or package identity")
     methods = sorted(entry[method_key] for entry in result.get("authMethods", []))
-    if methods != ["api-key", "chat-gpt"]:
+    expected = ["api-key", "chat-gpt", "gateway"] if gateway else ["api-key", "chat-gpt"]
+    if methods != expected:
         raise ValueError("unexpected signed-out authentication methods")
 
 
@@ -77,7 +79,16 @@ def live_sidecars(leader):
                for group, pid, state in (row.split() for row in snapshot.splitlines()))
 
 
-def session(command, env, state, wire):
+def check_signed_out(child, wire, state):
+    initialize(child, wire)
+    reply = exchange(child, 2, "session/new", {"cwd": str(state), "mcpServers": []})
+    error = reply.get("error", {})
+    if (set(reply) != {"id", "jsonrpc", "error"} or error.get("code") != -32000
+            or error.get("message") != "Authentication required"):
+        raise ValueError("signed-out session/new did not return the expected authentication error")
+
+
+def session(command, env, state, wire, handshake=check_signed_out):
     def expired(*_):
         raise TimeoutError("adapter handshake or shutdown timed out")
 
@@ -90,12 +101,7 @@ def session(command, env, state, wire):
                                   fflags=select.KQ_NOTE_EXIT)
             events.control([watch], 0, 0)
             signal.alarm(45)
-            initialize(child, wire)
-            reply = exchange(child, 2, "session/new", {"cwd": str(state), "mcpServers": []})
-            error = reply.get("error", {})
-            if (set(reply) != {"id", "jsonrpc", "error"} or error.get("code") != -32000
-                    or error.get("message") != "Authentication required"):
-                raise ValueError("signed-out session/new did not return the expected authentication error")
+            handshake(child, wire, state)
             child.stdin.close()
             signal.alarm(10)
             final = read_frame(child.stdout)
@@ -124,17 +130,22 @@ def session(command, env, state, wire):
             raise ValueError("adapter exited unsuccessfully after EOF")
 
 
-def check(packages, state, node, wire):
-    cli = packages / "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
-    adapter = packages / PACKAGE / "dist/index.js"
-    sandbox = ["/usr/bin/sandbox-exec", "-D", f"NODE={node}", "-D", f"CODEX={cli}",
-               "-D", f"PACKAGES={packages}", "-D", f"STATE={state}", "-f", str(HERE / "session.sb")]
+def private_env(state, cli):
     env = {"PATH": "/usr/bin:/bin", "CODEX_PATH": str(cli)}
     for name in ("HOME", "CODEX_HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
                  "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
         path = state / name.lower()
         path.mkdir(mode=0o700)
         env[name] = str(path)
+    return env
+
+
+def check(packages, state, node, wire):
+    cli = packages / "@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"
+    adapter = packages / PACKAGE / "dist/index.js"
+    sandbox = ["/usr/bin/sandbox-exec", "-D", f"NODE={node}", "-D", f"CODEX={cli}",
+               "-D", f"PACKAGES={packages}", "-D", f"STATE={state}", "-f", str(HERE / "session.sb")]
+    env = private_env(state, cli)
     # Distinguish a denied socket from a reachable host with a closed port.
     # The canary is deliberately readable by this user outside the sandbox.
     canary = state.parent / "read-control"
@@ -158,6 +169,22 @@ def check(packages, state, node, wire):
           "session/new refused (-32000 Authentication required), EOF exit 0")
 
 
+def install_packages(root, node, npm, cache=None):
+    install = root / "install"
+    install.mkdir()
+    for filename in ("package.json", "package-lock.json"):
+        shutil.copyfile(HERE / filename, install / filename)
+    env = {"PATH": f"{Path(node).parent}:/usr/bin:/bin", "HOME": str(root),
+           "NPM_CONFIG_USERCONFIG": "/dev/null", "NPM_CONFIG_GLOBALCONFIG": str(root / "npmrc"),
+           "NPM_CONFIG_UPDATE_NOTIFIER": "false"}
+    args = [npm, "ci", "--include=optional", "--ignore-scripts", "--no-audit", "--no-fund"]
+    if cache is not None:
+        args.extend(["--offline", "--cache", str(cache)])
+    subprocess.run(args,
+                   check=True, cwd=install, env=env, timeout=180)
+    return install / "node_modules"
+
+
 def main():
     if platform.system() != "Darwin" or platform.machine() != "arm64" or os.getuid() == 0:
         raise SystemExit("requires a non-root Apple Silicon macOS account")
@@ -166,19 +193,11 @@ def main():
         raise SystemExit("put the standalone Node.js distribution and npm on PATH")
     with tempfile.TemporaryDirectory(prefix="codex-acp-", dir="/private/tmp") as temporary:
         root = Path(temporary)
-        install = root / "install"
-        install.mkdir()
-        for filename in ("package.json", "package-lock.json"):
-            shutil.copyfile(HERE / filename, install / filename)
-        env = {"PATH": f"{Path(node).parent}:/usr/bin:/bin", "HOME": str(root),
-               "NPM_CONFIG_USERCONFIG": "/dev/null", "NPM_CONFIG_GLOBALCONFIG": str(root / "npmrc"),
-               "NPM_CONFIG_UPDATE_NOTIFIER": "false"}
-        subprocess.run([npm, "ci", "--include=optional", "--ignore-scripts", "--no-audit", "--no-fund"],
-                       check=True, cwd=install, env=env, timeout=180)
+        packages = install_packages(root, node, npm)
         for wire in (1, 2):
             state = root / f"state-v{wire}"
             state.mkdir(mode=0o700)
-            check(install / "node_modules", state, Path(node).resolve(), wire)
+            check(packages, state, Path(node).resolve(), wire)
 
 
 if __name__ == "__main__":
