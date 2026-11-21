@@ -30,7 +30,7 @@ const policy = {
   })).toString('base64url'),
 };
 const now = new Date('2026-11-21T00:00:00.000Z');
-const expiry = '2026-12-21T00:00:00.000Z';
+const expiry = '2026-12-21T00:00:00Z';
 
 test('statement binds exact qualification bytes, source commit and both verified reports', () => {
   const statement = buildStatement(qualification, preflight, policy, commit, expiry, now);

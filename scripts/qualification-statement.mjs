@@ -45,7 +45,10 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelope, so
     throw new Error('verified owner policy does not pin this release workflow');
   }
   const expiry = new Date(expiresAt);
-  if (!Number.isFinite(expiry.getTime()) || expiry <= now || expiry.toISOString() !== expiresAt) {
+  const normalized = expiry.toISOString();
+  const wholeSeconds = normalized.endsWith('.000Z') ? normalized.replace('.000Z', 'Z') : normalized;
+  if (!Number.isFinite(expiry.getTime()) || expiry <= now ||
+      (expiresAt !== normalized && expiresAt !== wholeSeconds)) {
     throw new Error('qualification expiry must be a future UTC instant');
   }
   let qualification;
