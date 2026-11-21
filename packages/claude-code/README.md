@@ -152,3 +152,39 @@ matching user tool-result ID and the random file contents. Only then does the
 server send the incremental text reply. The receipt records the observed tool,
 transcript and usage shapes as counts and booleans. Keep this optional check
 inside the same disposable guest.
+
+### Optional bound HQ draft check
+
+The Read fixture can also run against HQ draft [#208](https://github.com/true-line/agent-bot-hq/pull/208), commit `b3c4a6aadfe20abcac547ba17cd4538d3b00a68c`.
+On a connected preparation host, obtain the public checkout and verify its
+pinned contract release. The checkout must stay at this revision, without
+tracked modifications. Copy the checkout and verified release tree into the
+disposable guest; no network is needed in the guest.
+
+```sh
+git clone https://github.com/true-line/agent-bot-hq.git hq-checkout
+git -C hq-checkout checkout b3c4a6aadfe20abcac547ba17cd4538d3b00a68c
+(cd hq-checkout && node scripts/soul-contracts.mjs verify)
+mkdir -p hq-checkout/vendor/soul-contracts
+cp -R hq-checkout/.cache/soul-contracts/b96239cc47571237f7064ddbcbd0edec8e365c6b/{errors,fixtures,schemas} hq-checkout/vendor/soul-contracts/
+```
+
+Put Node.js 24.19.0 on the guest's PATH, then run:
+
+```sh
+python3 packages/claude-code/unix_messages.py claude-agent-acp-darwin-arm64.zip harness-egress.sb --read-fixture --hq-source /path/to/hq-checkout
+```
+
+A separate fixture shim accepts the clients' Unix HTTP requests, binds a
+fixture member to HQ's reference broker with the real keyed challenge, and
+translates the modeled turn into two `inference.responses` operations. The
+fixture provider compares the entire carried system, ordered messages, Read
+schema and output cap against the shim input; it asserts the tool request and
+file result, exact synthetic usage and two completed zero-cost ledger entries.
+HQ events are forwarded as they arrive. The provider waits for the stock client
+to observe the first text chunk before emitting the second.
+The shim renames `max_tokens` and omits `context_management`, `metadata` and
+`thinking`; ACP's separate auxiliary requests are refused by the fixture.
+Stock Claude does not authenticate to HQ in this check. The shim, fixture
+provider and authorization are test-only, and this is not a production transport
+or a protected launch qualification.
