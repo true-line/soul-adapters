@@ -115,6 +115,8 @@ jobs:
           EXPIRES_AT: ${{ inputs.expires_at }}
         run: |
           set -euo pipefail
+          cp "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex" "$RUNNER_TEMP/evidence/owner-root.hex"
+          cp "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt" "$RUNNER_TEMP/evidence/owner-key-id.txt"
           cp "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json" "$RUNNER_TEMP/evidence/trusted-root.json"
           node scripts/qualification-statement.mjs \
             "$RUNNER_TEMP/evidence/qualification.json" \
@@ -151,8 +153,8 @@ jobs:
           bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/evidence/bundle.json" | cut -d ' ' -f 1)"
           cd "$RUNNER_TEMP/machine"
           go run ./cmd/mm-qualification-verify-release \
-            -owner-root trust/qualification/owner-root.hex \
-            -owner-key-id "$(cat trust/qualification/owner-key-id.txt)" \
+            -owner-root "$RUNNER_TEMP/evidence/owner-root.hex" \
+            -owner-key-id "$(cat "$RUNNER_TEMP/evidence/owner-key-id.txt")" \
             -policy-envelope "$RUNNER_TEMP/evidence/policy-envelope.json" \
             -trusted-root "$RUNNER_TEMP/evidence/trusted-root.json" \
             -bundle "$RUNNER_TEMP/evidence/bundle.json" \
