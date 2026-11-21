@@ -137,17 +137,43 @@ const policy = {
   },
   max_revocation_age_seconds: 3600,
 };
-const policyRaw = bytes(policy);
-const policySignature = sign(null, Buffer.concat([
-  Buffer.from(POLICY_PURPOSE), Buffer.from([0]), policyRaw,
-]), ownerPrivate);
-save('policy-envelope.json', {
-  schema_version: 1,
-  purpose: POLICY_PURPOSE,
-  owner_key_id: policy.owner_key_id,
-  policy_sha256: hash(policyRaw),
-  policy_base64url: b64url(policyRaw),
-  signature_base64url: b64url(policySignature),
+function signPolicy(name, signedPolicy) {
+  const raw = bytes(signedPolicy);
+  const signature = sign(null, Buffer.concat([
+    Buffer.from(POLICY_PURPOSE), Buffer.from([0]), raw,
+  ]), ownerPrivate);
+  save(name, {
+    schema_version: 1,
+    purpose: POLICY_PURPOSE,
+    owner_key_id: signedPolicy.owner_key_id,
+    policy_sha256: hash(raw),
+    policy_base64url: b64url(raw),
+    signature_base64url: b64url(signature),
+  });
+}
+signPolicy('policy-envelope.json', policy);
+signPolicy('policy-envelope.wrong-identity.json', {
+  ...policy,
+  release_workflow: {
+    ...policy.release_workflow,
+    certificate_identity: 'https://github.com/' + REPOSITORY + '/' + WORKFLOW + '@refs/heads/main',
+  },
+});
+signPolicy('policy-envelope.wrong-host.json', {
+  ...policy,
+  evidence_signers: [{
+    ...policy.evidence_signers[0],
+    host_id: 'fixture-other-host',
+  }],
+});
+const staleAt = utc(new Date(now.getTime() - 3601000));
+signPolicy('policy-envelope.stale-revocation.json', {
+  ...policy,
+  issued_at: staleAt,
+  revocation_snapshot: {
+    ...policy.revocation_snapshot,
+    updated_at: staleAt,
+  },
 });
 const statement = {
   _type: 'https://in-toto.io/Statement/v1',
