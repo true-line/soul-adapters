@@ -5,6 +5,9 @@ on:
     paths:
       - scripts/qualification-statement.mjs
       - scripts/qualification-statement.test.mjs
+      - scripts/verify-private-assets.mjs
+      - scripts/verify-private-assets.test.mjs
+      - .github/workflows/release-qualification.yml
       - .github/workflows/qualification-statement.yml
   workflow_dispatch:
 
@@ -23,5 +26,5 @@ jobs:
           git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
           git checkout --quiet --detach FETCH_HEAD
-      - name: Test exact-byte statement construction
-        run: node --test scripts/qualification-statement.test.mjs
+      - name: Test exact-byte release inputs
+        run: node --test scripts/qualification-statement.test.mjs scripts/verify-private-assets.test.mjs

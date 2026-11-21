@@ -72,6 +72,12 @@ jobs:
           git -C "$RUNNER_TEMP/conformance" init --quiet
           git -C "$RUNNER_TEMP/conformance" -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-conformance.git "$EVIDENCE_COMMIT"
           test "$(git -C "$RUNNER_TEMP/conformance" rev-parse FETCH_HEAD)" = "$EVIDENCE_COMMIT"
+          git -C "$RUNNER_TEMP/conformance" checkout --quiet --detach FETCH_HEAD
+          index_mode="$(git -C "$RUNNER_TEMP/conformance" ls-files -s -- "$EVIDENCE_DIR/private-assets.json" | cut -d ' ' -f 1)"
+          test "$index_mode" = 100644
+          git -C "$RUNNER_TEMP/conformance" show "$EVIDENCE_COMMIT:$EVIDENCE_DIR/private-assets.json" \
+            > "$RUNNER_TEMP/private/private-assets.json"
+          test -s "$RUNNER_TEMP/private/private-assets.json"
           # The conformance commit supplies reviewed references and digests.
           # Exact host and owner-signed payloads are fetched from private
           # immutable staging, never from this public repository.
@@ -80,6 +86,17 @@ jobs:
           set -euo pipefail
           echo 'Private host, owner-policy and Souls asset fetch is not configured' >&2
           exit 1
+      - name: Match private bytes to reviewed evidence index
+        env:
+          EVIDENCE_DIR: ${{ inputs.evidence_dir }}
+          PRIVATE_ASSET_URI_PREFIX: ${{ vars.QUALIFICATION_PRIVATE_ASSET_URI_PREFIX }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-private-assets.mjs \
+            "$RUNNER_TEMP/private/private-assets.json" \
+            "$RUNNER_TEMP/private" \
+            "$PRIVATE_ASSET_URI_PREFIX" \
+            > "$RUNNER_TEMP/private/private-asset-verification.json"
       - name: Verify fixed owner policy and physical host reports
         run: |
           set -euo pipefail
