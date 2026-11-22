@@ -5,6 +5,41 @@ An adapter qualifies per enforcement profile on a named host, adapter version, a
 
 ## Release producer
 
+The source-only `scripts/qualification-statement-v3.mjs` prepares the measured
+`adapter/v3` Statement shape. It joins the protected and cooperative v3 report
+payloads, host envelopes, pre-sign execution completions and distinct post-sign
+completed-run commitments by exact byte digest. It checks the frozen `.soul`
+digest, control/v3 default-off provenance policy, release workflow identity,
+Souls build allowlist, and completion chronology. Its tests use synthetic keys
+and Machine verification results. **It has no release CLI or workflow call:**
+Machine has no released authenticated v3 preflight output or physical lifecycle
+issuer. The v2 release workflow below retains every private fetch,
+signing and upload hold. Neither the source builder nor its tests authenticate
+a host signature, Machine issuer, installed bytes or physical T gate.
+
+The source-only v3 asset index names 13 distinct roles, including the frozen
+`.soul`, Souls package and receipt, and both reports' pre-sign and post-sign
+Machine records. The builder requires a reviewed canonical index and an exact
+byte verification result for every role. The v3 index is not wired into the
+private fetch or release workflow.
+
+Machine draft #668 has a source-only `mm-qualification-preflight --host-v3`
+interface. Its required private inputs are the owner root and key ID, signed
+policy envelope and qualification record, protected and cooperative host
+envelopes, separately signed Souls build bundle and package with its pinned
+trust root, Machine issuer root, and the distinct protected and cooperative
+execution-completion and report-commitment envelopes. Its JSON result has
+`schema_version: 3`, `verification_contract` set to
+`agent-bot/machine-qualification-preflight/v3`, the exact qualification and
+policy hashes, both profiles' report/envelope/pre-sign/post-sign hashes, the
+bare frozen `.soul` artifact hash, and Souls bundle/package/tree hashes. The
+v3 builder consumes those fields and the same exact private bytes. The
+source-only CLI does not supply an authenticated A physical observation,
+installed-byte measurement or T verdict. The release workflow must pin a
+reviewed Machine version, extend its private asset index and independently
+read back every new chain file before it may invoke that CLI. Those changes
+remain behind the existing holds.
+
 The designated workflow is [release-qualification.yml](../.github/workflows/release-qualification.yml). It accepts a manual run only on protected `main`; a separate first gate fails another ref before requesting approval for the `qualification-release` environment, rather than appearing green with a skipped job. Its inputs name an exact `soul-conformance` evidence commit, a directory under `reports/`, and a UTC qualification expiry. The reviewed evidence commit must identify the exact private `qualification.json`, protected v2 and cooperative v1 host envelopes, owner-signed control/v2 policy, Souls package, and separately signed Souls build receipt. The workflow must fetch private bytes through an approved immutable staging path, then build Machine's preflight and offline verifier from a reviewed exact commit. Missing trust files, private assets, or authenticated references fail before signing. The private staging transport is not configured, so the current draft stops before any GitHub Release upload.
 
 After Machine authenticates the owner policy, both host signatures, and the Souls build receipt against separately pinned roots and identities, the producer binds the exact verified policy envelope, qualification, report payloads and envelopes, Souls package digest, receipt digest, and source tree to an in-toto Statement. It compares the owner-pinned release workflow and Souls build workflow identities with the actual source before keyless Cosign signing. Machine must then verify the resulting Sigstore v0.3 bundle offline. Signed physical host reports and envelopes, owner policy, full qualification bytes, Souls package and receipt, and complete verification outputs stay in immutable private staging. A later public draft GitHub Release may carry only reviewed redacted metadata, exact digests, references, and verdicts; it must never archive the private working directory. This release producer does not authorize protected launch.

@@ -5,9 +5,13 @@ on:
     paths:
       - scripts/qualification-statement.mjs
       - scripts/qualification-statement.test.mjs
+      - scripts/qualification-statement-v3.mjs
+      - scripts/qualification-statement-v3.test.mjs
       - scripts/build-private-assets-index.mjs
       - scripts/verify-private-assets.mjs
       - scripts/verify-private-assets.test.mjs
+      - scripts/verify-private-assets-v3.mjs
+      - scripts/verify-private-assets-v3.test.mjs
       - .github/workflows/release-qualification.yml
       - .github/workflows/qualification-statement.yml
   workflow_dispatch:
@@ -28,4 +32,4 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
           git checkout --quiet --detach FETCH_HEAD
       - name: Test exact-byte release inputs
-        run: node --test scripts/qualification-statement.test.mjs scripts/verify-private-assets.test.mjs
+        run: node --test scripts/qualification-statement.test.mjs scripts/qualification-statement-v3.test.mjs scripts/verify-private-assets.test.mjs scripts/verify-private-assets-v3.test.mjs
