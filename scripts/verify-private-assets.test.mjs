@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { privateObjectKeyForAsset, verifyPrivateAssets } from './verify-private-assets.mjs';
+import { fileURLToPath } from 'node:url';
+import { buildPrivateAssetIndex, privateObjectKeyForAsset, verifyPrivateAssets } from './verify-private-assets.mjs';
 
 const files = {
   qualification: 'qualification.json',
@@ -25,11 +27,12 @@ function fixture(t) {
   for (const [role, file] of Object.entries(files)) {
     const bytes = Buffer.from(`exact-${role}\n`);
     fs.writeFileSync(path.join(privateDir, file), bytes);
+    const assetSHA = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
     assets[role] = {
-      sha256: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      uri: prefix + role + '/' + assetSHA.slice(7),
+      sha256: assetSHA,
       byte_length: bytes.length,
     };
-    assets[role].uri = prefix + role + '/' + assets[role].sha256.slice(7);
   }
   const index = { schema_version: 1, assets };
   const indexPath = path.join(dir, 'private-assets.json');
@@ -43,11 +46,47 @@ test('all six exact private bytes match the reviewed index', t => {
   const result = verifyPrivateAssets(f.indexPath, f.privateDir, prefix);
   assert.deepEqual(Object.keys(result.assets), Object.keys(files));
   assert.equal(result.assets.qualification.sha256, f.index.assets.qualification.sha256);
+  assert.equal(result.index_sha256,
+    'sha256:' + createHash('sha256').update(fs.readFileSync(f.indexPath)).digest('hex'));
   for (const role of Object.keys(files)) {
     assert.equal(privateObjectKeyForAsset(f.index, role, prefix),
       `v1/${role}/${f.index.assets[role].sha256.slice(7)}`);
   }
   assert.throws(() => privateObjectKeyForAsset(f.index, 'unexpected', prefix), /unknown private asset role/);
+});
+
+test('generator emits canonical six-role index from exact local file bytes', t => {
+  const f = fixture(t);
+  const generated = buildPrivateAssetIndex(f.privateDir, prefix);
+  assert.deepEqual(generated, f.index);
+  const cli = execFileSync(process.execPath,
+    [fileURLToPath(new URL('./build-private-assets-index.mjs', import.meta.url)), f.privateDir, prefix]);
+  assert.deepEqual(cli, Buffer.from(JSON.stringify(f.index, null, 2) + '\n'));
+  fs.writeFileSync(f.indexPath, cli);
+  const verified = verifyPrivateAssets(f.indexPath, f.privateDir, prefix);
+  assert.equal(verified.index_sha256,
+    'sha256:' + createHash('sha256').update(cli).digest('hex'));
+  assert.deepEqual(verified.assets,
+    Object.fromEntries(Object.entries(f.index.assets).map(([role, value]) =>
+      [role, { sha256: value.sha256, byte_length: value.byte_length }])));
+});
+
+test('generator refuses missing, empty, nonregular, and symlinked private files', t => {
+  const f = fixture(t);
+  const target = path.join(f.privateDir, files.qualification);
+  fs.unlinkSync(target);
+  assert.throws(() => buildPrivateAssetIndex(f.privateDir, prefix), /qualification:/);
+  fs.writeFileSync(target, '');
+  assert.throws(() => buildPrivateAssetIndex(f.privateDir, prefix), /empty/);
+  fs.unlinkSync(target);
+  fs.mkdirSync(target);
+  assert.throws(() => buildPrivateAssetIndex(f.privateDir, prefix), /regular file/);
+  fs.rmdirSync(target);
+  fs.symlinkSync(path.join(f.privateDir, files['policy-envelope']), target);
+  assert.throws(() => buildPrivateAssetIndex(f.privateDir, prefix), /qualification:/);
+  const linkedDir = path.join(path.dirname(f.privateDir), 'linked-private');
+  fs.symlinkSync(f.privateDir, linkedDir);
+  assert.throws(() => buildPrivateAssetIndex(linkedDir, prefix), /directory must be real/);
 });
 
 test('altered bytes are rejected even when length is unchanged', t => {

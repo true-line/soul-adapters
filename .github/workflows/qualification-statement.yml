@@ -5,6 +5,7 @@ on:
     paths:
       - scripts/qualification-statement.mjs
       - scripts/qualification-statement.test.mjs
+      - scripts/build-private-assets-index.mjs
       - scripts/verify-private-assets.mjs
       - scripts/verify-private-assets.test.mjs
       - .github/workflows/release-qualification.yml

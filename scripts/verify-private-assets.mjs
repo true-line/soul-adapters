@@ -67,12 +67,13 @@ export function privateObjectKeyForAsset(index, role, approvedPrefix) {
   return `v1/${role}/${index.assets[role].sha256.slice(7)}`;
 }
 
-function hashRegularFile(file, expectedLength) {
+function inspectRegularFile(file) {
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const before = fs.fstatSync(fd, { bigint: true });
-    if (!before.isFile() || before.size !== BigInt(expectedLength)) {
-      throw new Error('missing regular file or byte length mismatch');
+    if (!before.isFile() || before.size < 1n ||
+        before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('missing, empty, or oversized regular file');
     }
     const hash = createHash('sha256');
     const block = Buffer.allocUnsafe(1024 * 1024);
@@ -85,7 +86,7 @@ function hashRegularFile(file, expectedLength) {
     }
     const after = fs.fstatSync(fd, { bigint: true });
     const currentPath = fs.lstatSync(file, { bigint: true });
-    if (length !== expectedLength || !currentPath.isFile() ||
+    if (BigInt(length) !== before.size || !currentPath.isFile() ||
         before.dev !== after.dev || before.ino !== after.ino ||
         before.size !== after.size ||
         before.mtimeNs !== after.mtimeNs ||
@@ -93,10 +94,34 @@ function hashRegularFile(file, expectedLength) {
         before.dev !== currentPath.dev || before.ino !== currentPath.ino) {
       throw new Error('private asset changed while being checked');
     }
-    return `sha256:${hash.digest('hex')}`;
+    return { sha256: `sha256:${hash.digest('hex')}`, byte_length: length };
   } finally {
     fs.closeSync(fd);
   }
+}
+
+export function buildPrivateAssetIndex(privateDir, approvedPrefix) {
+  if (!fs.lstatSync(privateDir).isDirectory()) {
+    throw new Error('private asset directory must be real');
+  }
+  if (approvedPrefix !== 'qualification://stage2a/') {
+    throw new Error('approved public logical asset URI prefix is required');
+  }
+  const assets = {};
+  for (const [role, file] of Object.entries(files)) {
+    let inspected;
+    try {
+      inspected = inspectRegularFile(path.join(privateDir, file));
+    } catch (error) {
+      throw new Error(`${role}: ${error.message}`);
+    }
+    assets[role] = {
+      uri: `${approvedPrefix}${role}/${inspected.sha256.slice(7)}`,
+      sha256: inspected.sha256,
+      byte_length: inspected.byte_length,
+    };
+  }
+  return validatePrivateAssetIndex({ schema_version: 1, assets }, approvedPrefix);
 }
 
 export function verifyPrivateAssets(indexPath, privateDir, approvedPrefix) {
@@ -115,18 +140,25 @@ export function verifyPrivateAssets(indexPath, privateDir, approvedPrefix) {
   const verified = {};
   for (const [role, file] of Object.entries(files)) {
     const asset = index.assets[role];
-    let digest;
+    let inspected;
     try {
-      digest = hashRegularFile(path.join(privateDir, file), asset.byte_length);
+      inspected = inspectRegularFile(path.join(privateDir, file));
     } catch (error) {
       throw new Error(`${role}: ${error.message}`);
     }
-    if (digest !== asset.sha256) {
+    if (inspected.byte_length !== asset.byte_length) {
+      throw new Error(`${role}: byte length mismatch`);
+    }
+    if (inspected.sha256 !== asset.sha256) {
       throw new Error(`${role}: SHA-256 mismatch`);
     }
-    verified[role] = { sha256: digest, byte_length: asset.byte_length };
+    verified[role] = inspected;
   }
-  return { schema_version: 1, assets: verified };
+  return {
+    schema_version: 1,
+    index_sha256: 'sha256:' + createHash('sha256').update(rawIndex).digest('hex'),
+    assets: verified,
+  };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
