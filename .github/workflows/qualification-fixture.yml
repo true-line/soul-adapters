@@ -1,0 +1,149 @@
+name: Build test-only signed qualification fixture
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/qualification-fixture.yml
+      - scripts/test-only-qualification-fixture.mjs
+
+permissions: {}
+
+jobs:
+  fixture:
+    if: github.event.pull_request.head.repo.full_name == 'true-line/soul-adapters'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CONTRACTS_COMMIT: 0ec25670fde95f8417c985c318f4875b7eb2918f
+      MACHINE_COMMIT: 10441e07de7bf33ceb1e5e47f74916ac67ff2694
+    steps:
+      - name: Fetch exact PR merge source
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          git init --quiet
+          git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+      - name: Fetch exact contracts and Machine source
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/contracts" "$RUNNER_TEMP/machine"
+          for spec in "contracts soul-contracts $CONTRACTS_COMMIT" "machine agent-bot-machine $MACHINE_COMMIT"; do
+            read -r folder repository commit <<< "$spec"
+            git -C "$RUNNER_TEMP/$folder" init --quiet
+            git -C "$RUNNER_TEMP/$folder" -c credential.helper= fetch --quiet --no-tags --depth=1 "https://github.com/true-line/$repository.git" "$commit"
+            test "$(git -C "$RUNNER_TEMP/$folder" rev-parse FETCH_HEAD)" = "$commit"
+            git -C "$RUNNER_TEMP/$folder" checkout --quiet --detach FETCH_HEAD
+          done
+      - name: Install digest-pinned Cosign v3.1.4
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 \
+            --output "$RUNNER_TEMP/cosign"
+          printf '%s  %s\n' '424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa' "$RUNNER_TEMP/cosign" | sha256sum --check
+          chmod 755 "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Generate synthetic owner policy and signed host envelopes
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fixture"
+          cosign trusted-root create --with-default-services --out "$RUNNER_TEMP/fixture-root.json"
+          node scripts/test-only-qualification-fixture.mjs \
+            "$RUNNER_TEMP/contracts/fixtures/qualification/macos/host-protected.json" \
+            "$RUNNER_TEMP/contracts/fixtures/qualification/macos/host-cooperative.json" \
+            "$RUNNER_TEMP/fixture-root.json" "$RUNNER_TEMP/fixture" \
+            > "$RUNNER_TEMP/fixture/generation.json"
+          cd "$RUNNER_TEMP/machine"
+          go run ./cmd/mm-qualification-preflight \
+            -owner-root "$RUNNER_TEMP/fixture/owner-root.hex" \
+            -owner-key-id "$(cat "$RUNNER_TEMP/fixture/owner-key-id.txt")" \
+            -policy-envelope "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            -qualification "$RUNNER_TEMP/fixture/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/fixture/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/fixture/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/fixture/preflight.json"
+          node - "$RUNNER_TEMP/fixture" <<'NODE'
+          const fs = require('node:fs');
+          const dir = process.argv[2];
+          const generated = JSON.parse(fs.readFileSync(dir + '/generation.json'));
+          const verified = JSON.parse(fs.readFileSync(dir + '/preflight.json'));
+          for (const key of ['qualification_sha256', 'protected_report_sha256', 'cooperative_report_sha256']) {
+            if (generated[key] !== verified[key]) throw new Error('Machine preflight digest mismatch: ' + key);
+          }
+          NODE
+      - name: Sign test-only exact qualification bytes
+        run: |
+          set -euo pipefail
+          cosign attest-blob \
+            --statement "$RUNNER_TEMP/fixture/statement.json" \
+            --bundle "$RUNNER_TEMP/fixture/bundle.json" \
+            --yes "$RUNNER_TEMP/fixture/qualification.json"
+          cosign verify-blob-attestation "$RUNNER_TEMP/fixture/qualification.json" \
+            --bundle "$RUNNER_TEMP/fixture/bundle.json" \
+            --trusted-root "$RUNNER_TEMP/fixture/trusted-root.json" \
+            --type https://true-line.ai/soul-contracts/adapter/v1/macos-protected-qualification \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/qualification-fixture.yml@$GITHUB_REF" \
+            > "$RUNNER_TEMP/fixture/cosign-verification.txt"
+          cd "$RUNNER_TEMP/machine"
+          go build -o "$RUNNER_TEMP/verify-release" ./cmd/mm-qualification-verify-release
+          bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/fixture/bundle.json" | cut -d ' ' -f 1)"
+          verify_release() {
+            "$RUNNER_TEMP/verify-release" \
+              -owner-root "$RUNNER_TEMP/fixture/owner-root.hex" \
+              -owner-key-id "$(cat "$RUNNER_TEMP/fixture/owner-key-id.txt")" \
+              -policy-envelope "$1" \
+              -trusted-root "$RUNNER_TEMP/fixture/trusted-root.json" \
+              -bundle "$2" \
+              -bundle-sha256 "$3" \
+              -qualification "$RUNNER_TEMP/fixture/qualification.json" \
+              -protected-envelope "$RUNNER_TEMP/fixture/protected-envelope.json" \
+              -cooperative-envelope "$RUNNER_TEMP/fixture/cooperative-envelope.json"
+          }
+          verify_release "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha" \
+            > "$RUNNER_TEMP/fixture/offline-verification.json"
+          node - "$RUNNER_TEMP/fixture" <<'NODE'
+          const fs = require('node:fs');
+          const dir = process.argv[2];
+          const bundle = JSON.parse(fs.readFileSync(dir + '/bundle.json'));
+          const signature = bundle.dsseEnvelope.signatures[0].sig;
+          bundle.dsseEnvelope.signatures[0].sig = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
+          fs.writeFileSync(dir + '/bundle.altered.json', JSON.stringify(bundle));
+          NODE
+          altered_sha="sha256:$(sha256sum "$RUNNER_TEMP/fixture/bundle.altered.json" | cut -d ' ' -f 1)"
+          expect_refusal() {
+            local name="$1"
+            shift
+            local status=0
+            verify_release "$@" > "$RUNNER_TEMP/fixture/$name.stdout.txt" \
+              2> "$RUNNER_TEMP/fixture/$name.stderr.txt" || status=$?
+            test "$status" -eq 1
+            test ! -s "$RUNNER_TEMP/fixture/$name.stdout.txt"
+          }
+          expect_refusal altered-bundle "$RUNNER_TEMP/fixture/policy-envelope.json" \
+            "$RUNNER_TEMP/fixture/bundle.altered.json" "$altered_sha"
+          expect_refusal wrong-identity "$RUNNER_TEMP/fixture/policy-envelope.wrong-identity.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha"
+          expect_refusal stale-revocation "$RUNNER_TEMP/fixture/policy-envelope.stale-revocation.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha"
+          expect_refusal wrong-host "$RUNNER_TEMP/fixture/policy-envelope.wrong-host.json" \
+            "$RUNNER_TEMP/fixture/bundle.json" "$bundle_sha"
+          cd "$RUNNER_TEMP/fixture"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Emit verified fixture for Agent Bot archival
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/test-only-signed-qualification.tgz" -C "$RUNNER_TEMP/fixture" .
+          echo FIXTURE_TAR_BASE64_BEGIN
+          base64 -w 0 "$RUNNER_TEMP/test-only-signed-qualification.tgz"
+          echo
+          echo FIXTURE_TAR_BASE64_END

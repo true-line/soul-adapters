@@ -1,0 +1,249 @@
+name: Release protected adapter qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_commit:
+        description: Exact soul-conformance commit carrying reviewed candidate evidence
+        required: true
+        type: string
+      evidence_dir:
+        description: Directory under reports/ with qualification and host envelopes
+        required: true
+        type: string
+      expires_at:
+        description: Qualification expiry as a UTC RFC 3339 instant
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require protected main
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+  release:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: qualification-release
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MACHINE_COMMIT: 10441e07de7bf33ceb1e5e47f74916ac67ff2694
+    steps:
+      - name: Fetch exact release source
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          git init --quiet
+          git -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-adapters.git "$GITHUB_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+      - name: Pin reviewed evidence and Machine verifier
+        env:
+          EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
+          EVIDENCE_DIR: ${{ inputs.evidence_dir }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          [[ "$EVIDENCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EVIDENCE_DIR" =~ ^reports/[A-Za-z0-9._/-]{1,200}$ ]]
+          [[ "/$EVIDENCE_DIR/" != *"/../"* ]]
+          [[ "/$EVIDENCE_DIR/" != *"/./"* ]]
+          install -d -m 700 "$RUNNER_TEMP/private"
+          mkdir -p "$RUNNER_TEMP/machine" "$RUNNER_TEMP/conformance"
+          git -C "$RUNNER_TEMP/machine" init --quiet
+          git -C "$RUNNER_TEMP/machine" -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/agent-bot-machine.git "$MACHINE_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/machine" rev-parse FETCH_HEAD)" = "$MACHINE_COMMIT"
+          git -C "$RUNNER_TEMP/machine" checkout --quiet --detach FETCH_HEAD
+          test -s "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex"
+          test -s "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt"
+          test -s "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json"
+          test -s "$RUNNER_TEMP/machine/trust/qualification/souls-trusted-root.json"
+          git -C "$RUNNER_TEMP/conformance" init --quiet
+          git -C "$RUNNER_TEMP/conformance" -c credential.helper= fetch --quiet --no-tags --depth=1 https://github.com/true-line/soul-conformance.git "$EVIDENCE_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/conformance" rev-parse FETCH_HEAD)" = "$EVIDENCE_COMMIT"
+          git -C "$RUNNER_TEMP/conformance" checkout --quiet --detach FETCH_HEAD
+          index_mode="$(git -C "$RUNNER_TEMP/conformance" ls-files -s -- "$EVIDENCE_DIR/private-assets.json" | cut -d ' ' -f 1)"
+          test "$index_mode" = 100644
+          git -C "$RUNNER_TEMP/conformance" show "$EVIDENCE_COMMIT:$EVIDENCE_DIR/private-assets.json" \
+            > "$RUNNER_TEMP/private/private-assets.json"
+          test -s "$RUNNER_TEMP/private/private-assets.json"
+          # The conformance commit supplies reviewed references and digests.
+          # Exact host and owner-signed payloads are fetched from private
+          # immutable staging, never from this public repository.
+      - name: Hold for approved private evidence fetch
+        run: |
+          set -euo pipefail
+          echo 'Private host, owner-policy and Souls asset fetch is not configured' >&2
+          exit 1
+      - name: Match private bytes to reviewed evidence index
+        env:
+          EVIDENCE_DIR: ${{ inputs.evidence_dir }}
+          PRIVATE_ASSET_URI_PREFIX: ${{ vars.QUALIFICATION_PRIVATE_ASSET_URI_PREFIX }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-private-assets.mjs \
+            "$RUNNER_TEMP/private/private-assets.json" \
+            "$RUNNER_TEMP/private" \
+            "$PRIVATE_ASSET_URI_PREFIX" \
+            > "$RUNNER_TEMP/private/private-asset-verification.json"
+      - name: Verify fixed owner policy and physical host reports
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/private/souls-package.tgz"
+          test -s "$RUNNER_TEMP/private/souls-build-receipt.bundle.json"
+          cd "$RUNNER_TEMP/machine"
+          go run ./cmd/mm-qualification-preflight \
+            -bridge-v2 \
+            -souls-build-bundle "$RUNNER_TEMP/private/souls-build-receipt.bundle.json" \
+            -souls-package "$RUNNER_TEMP/private/souls-package.tgz" \
+            -souls-trusted-root trust/qualification/souls-trusted-root.json \
+            -owner-root trust/qualification/owner-root.hex \
+            -owner-key-id "$(cat trust/qualification/owner-key-id.txt)" \
+            -policy-envelope "$RUNNER_TEMP/private/policy-envelope.json" \
+            -qualification "$RUNNER_TEMP/private/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/private/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/private/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/private/preflight.json"
+      - name: Preserve exact authenticated host report bytes
+        run: |
+          set -euo pipefail
+          node - "$RUNNER_TEMP/private" <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const dir = process.argv[2];
+          const preflight = JSON.parse(fs.readFileSync(dir + '/preflight.json', 'utf8'));
+          fs.mkdirSync(dir + '/qualification');
+          for (const [profile, stem] of [['protected', 'protected'], ['cooperative', 'cooperative']]) {
+            const envelope = JSON.parse(fs.readFileSync(dir + '/' + stem + '-envelope.json', 'utf8'));
+            const encoded = envelope.report_base64url;
+            if (typeof encoded !== 'string' || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
+              throw new Error('host report is not canonical base64url');
+            }
+            const raw = Buffer.from(encoded, 'base64url');
+            const digest = 'sha256:' + crypto.createHash('sha256').update(raw).digest('hex');
+            if (raw.toString('base64url') !== encoded ||
+                digest !== preflight[profile + '_report_sha256']) {
+              throw new Error('released host report differs from Machine preflight');
+            }
+            fs.writeFileSync(dir + '/qualification/' + stem + '.report.json', raw);
+          }
+          NODE
+      - name: Install digest-pinned Cosign v3.1.4
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 \
+            --output "$RUNNER_TEMP/cosign"
+          printf '%s  %s\n' '424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa' "$RUNNER_TEMP/cosign" | sha256sum --check
+          chmod 755 "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Prepare pinned Sigstore root and exact Statement
+        env:
+          EXPIRES_AT: ${{ inputs.expires_at }}
+          PRIVATE_ASSET_URI_PREFIX: ${{ vars.QUALIFICATION_PRIVATE_ASSET_URI_PREFIX }}
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex" "$RUNNER_TEMP/private/owner-root.hex"
+          cp "$RUNNER_TEMP/machine/trust/qualification/owner-key-id.txt" "$RUNNER_TEMP/private/owner-key-id.txt"
+          cp "$RUNNER_TEMP/machine/trust/qualification/sigstore-trusted-root.json" "$RUNNER_TEMP/private/trusted-root.json"
+          cp "$RUNNER_TEMP/machine/trust/qualification/souls-trusted-root.json" "$RUNNER_TEMP/private/souls-trusted-root.json"
+          node scripts/qualification-statement.mjs \
+            "$RUNNER_TEMP/private/qualification.json" \
+            "$RUNNER_TEMP/private/preflight.json" \
+            "$RUNNER_TEMP/private/policy-envelope.json" \
+            "$RUNNER_TEMP/private/protected-envelope.json" \
+            "$RUNNER_TEMP/private/cooperative-envelope.json" \
+            "$RUNNER_TEMP/private/private-assets.json" \
+            "$PRIVATE_ASSET_URI_PREFIX" \
+            "$GITHUB_SHA" "$EXPIRES_AT" \
+            > "$RUNNER_TEMP/private/statement.json"
+          node - "$RUNNER_TEMP/private/policy-envelope.json" "$RUNNER_TEMP/private/trusted-root.json" <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const envelope = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const policy = JSON.parse(Buffer.from(envelope.policy_base64url, 'base64url').toString('utf8'));
+          const root = fs.readFileSync(process.argv[3]);
+          const digest = 'sha256:' + crypto.createHash('sha256').update(root).digest('hex');
+          if (policy.release_workflow.trust_root_sha256 !== digest) {
+            throw new Error('Sigstore trusted root differs from owner-signed policy');
+          }
+          NODE
+      - name: Hold for private staging and Rekor approval
+        run: |
+          set -euo pipefail
+          # Do not issue OIDC or write a public transparency entry until the
+          # immutable private sink, read-back check, retention and allowed
+          # public Statement metadata have been reviewed.
+          echo 'Private staging and public Rekor metadata are not approved' >&2
+          exit 1
+      - name: Sign exact release Statement
+        env:
+          EVIDENCE_COMMIT: ${{ inputs.evidence_commit }}
+          EVIDENCE_DIR: ${{ inputs.evidence_dir }}
+        run: |
+          set -euo pipefail
+          cosign attest-blob \
+            --statement "$RUNNER_TEMP/private/statement.json" \
+            --bundle "$RUNNER_TEMP/private/bundle.json" \
+            --yes "$RUNNER_TEMP/private/qualification.json"
+          cosign verify-blob-attestation "$RUNNER_TEMP/private/qualification.json" \
+            --bundle "$RUNNER_TEMP/private/bundle.json" \
+            --trusted-root "$RUNNER_TEMP/private/trusted-root.json" \
+            --type https://true-line.ai/soul-contracts/adapter/v2/macos-protected-qualification \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main" > "$RUNNER_TEMP/private/cosign-verification.txt"
+          bundle_sha="sha256:$(sha256sum "$RUNNER_TEMP/private/bundle.json" | cut -d ' ' -f 1)"
+          cd "$RUNNER_TEMP/machine"
+          go run ./cmd/mm-qualification-verify-release \
+            -bridge-v2 \
+            -souls-build-bundle "$RUNNER_TEMP/private/souls-build-receipt.bundle.json" \
+            -souls-package "$RUNNER_TEMP/private/souls-package.tgz" \
+            -souls-trusted-root "$RUNNER_TEMP/private/souls-trusted-root.json" \
+            -owner-root "$RUNNER_TEMP/private/owner-root.hex" \
+            -owner-key-id "$(cat "$RUNNER_TEMP/private/owner-key-id.txt")" \
+            -policy-envelope "$RUNNER_TEMP/private/policy-envelope.json" \
+            -trusted-root "$RUNNER_TEMP/private/trusted-root.json" \
+            -bundle "$RUNNER_TEMP/private/bundle.json" \
+            -bundle-sha256 "$bundle_sha" \
+            -qualification "$RUNNER_TEMP/private/qualification.json" \
+            -protected-envelope "$RUNNER_TEMP/private/protected-envelope.json" \
+            -cooperative-envelope "$RUNNER_TEMP/private/cooperative-envelope.json" \
+            > "$RUNNER_TEMP/private/offline-verification.json"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const data = {
+            schema_version: 1,
+            release_source_commit: process.env.GITHUB_SHA,
+            evidence_repository: 'true-line/soul-conformance',
+            evidence_commit: process.env.EVIDENCE_COMMIT,
+            evidence_dir: process.env.EVIDENCE_DIR,
+            generated_at: new Date().toISOString(),
+            machine_preflight_commit: process.env.MACHINE_COMMIT,
+            workflow: '.github/workflows/release-qualification.yml',
+            oidc_issuer: 'https://token.actions.githubusercontent.com',
+            certificate_identity: 'https://github.com/true-line/soul-adapters/.github/workflows/release-qualification.yml@refs/heads/main',
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/private/source.json', JSON.stringify(data) + '\n');
+          NODE
+          cd "$RUNNER_TEMP/private"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Hold for signed bundle private upload
+        run: |
+          set -euo pipefail
+          # Exact host reports and signatures, owner policy, Souls package,
+          # build receipt and qualification bytes remain private pilot assets.
+          # Replace this hold only after the signed bundle and exact verifier
+          # outputs are stored immutably and independently read back by hash.
+          echo 'Signed bundle private upload is not configured; refusing release upload' >&2
+          exit 1
