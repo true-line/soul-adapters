@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { verifyPrivateAssets } from './verify-private-assets.mjs';
+import { privateObjectKeyForAsset, verifyPrivateAssets } from './verify-private-assets.mjs';
 
 const files = {
   qualification: 'qualification.json',
@@ -14,7 +14,7 @@ const files = {
   'souls-package': 'souls-package.tgz',
   'souls-build-bundle': 'souls-build-receipt.bundle.json',
 };
-const prefix = 's3://approved-stage2a/immutable/';
+const prefix = 'qualification://stage2a/';
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'private-assets-'));
@@ -26,10 +26,10 @@ function fixture(t) {
     const bytes = Buffer.from(`exact-${role}\n`);
     fs.writeFileSync(path.join(privateDir, file), bytes);
     assets[role] = {
-      uri: prefix + file,
       sha256: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
       byte_length: bytes.length,
     };
+    assets[role].uri = prefix + role + '/' + assets[role].sha256.slice(7);
   }
   const index = { schema_version: 1, assets };
   const indexPath = path.join(dir, 'private-assets.json');
@@ -43,6 +43,11 @@ test('all six exact private bytes match the reviewed index', t => {
   const result = verifyPrivateAssets(f.indexPath, f.privateDir, prefix);
   assert.deepEqual(Object.keys(result.assets), Object.keys(files));
   assert.equal(result.assets.qualification.sha256, f.index.assets.qualification.sha256);
+  for (const role of Object.keys(files)) {
+    assert.equal(privateObjectKeyForAsset(f.index, role, prefix),
+      `v1/${role}/${f.index.assets[role].sha256.slice(7)}`);
+  }
+  assert.throws(() => privateObjectKeyForAsset(f.index, 'unexpected', prefix), /unknown private asset role/);
 });
 
 test('altered bytes are rejected even when length is unchanged', t => {
@@ -61,10 +66,11 @@ test('missing and extra roles, duplicate URIs, and unapproved URI are rejected',
   f.index.assets['souls-build-bundle'] = { ...f.index.assets.qualification };
   f.write();
   assert.throws(() => verifyPrivateAssets(f.indexPath, f.privateDir, prefix), /duplicated/);
-  f.index.assets['souls-build-bundle'].uri = 's3://other/receipt';
+  f.index.assets['souls-build-bundle'].uri = 'r2://private-bucket/receipt';
   f.write();
   assert.throws(() => verifyPrivateAssets(f.indexPath, f.privateDir, prefix), /outside approved prefix/);
-  f.index.assets['souls-build-bundle'].uri = prefix + 'receipt';
+  f.index.assets['souls-build-bundle'].uri = prefix + 'souls-build-bundle/' +
+    f.index.assets['souls-build-bundle'].sha256.slice(7);
   f.index.assets.unexpected = { ...f.index.assets.qualification };
   f.write();
   assert.throws(() => verifyPrivateAssets(f.indexPath, f.privateDir, prefix), /roles/);
@@ -86,7 +92,23 @@ test('wrong size and symlinked private file are rejected', t => {
 test('missing approved prefix refuses verification', t => {
   const f = fixture(t);
   assert.throws(() => verifyPrivateAssets(f.indexPath, f.privateDir, ''),
-    /approved private asset URI prefix/);
+    /approved public logical asset URI prefix/);
+});
+
+test('public URI must use exact role and content digest without a private locator', t => {
+  const f = fixture(t);
+  const original = f.index.assets['souls-build-bundle'].uri;
+  for (const uri of [
+    prefix + 'souls-package/' + f.index.assets['souls-build-bundle'].sha256.slice(7),
+    prefix + 'souls-build-bundle/' + '0'.repeat(64),
+    original + '?token=PRIVATE_SENTINEL',
+    original + '/..',
+  ]) {
+    f.index.assets['souls-build-bundle'].uri = uri;
+    f.write();
+    assert.throws(() => verifyPrivateAssets(f.indexPath, f.privateDir, prefix),
+      /URI must contain only the public role and matching digest|outside approved prefix/);
+  }
 });
 
 test('duplicate JSON keys and alternate encodings refuse review', t => {

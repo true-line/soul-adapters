@@ -28,9 +28,8 @@ export function validatePrivateAssetIndex(index, approvedPrefix) {
   if (index.schema_version !== 1) {
     throw new Error('unsupported private asset index version');
   }
-  if (typeof approvedPrefix !== 'string' || !approvedPrefix.endsWith('/') ||
-      approvedPrefix.length < 4) {
-    throw new Error('approved private asset URI prefix is required');
+  if (approvedPrefix !== 'qualification://stage2a/') {
+    throw new Error('approved public logical asset URI prefix is required');
   }
   requireKeys(index.assets, Object.keys(files), 'private asset roles');
   const seenUris = new Set();
@@ -48,11 +47,24 @@ export function validatePrivateAssetIndex(index, approvedPrefix) {
         !/^sha256:[0-9a-f]{64}$/.test(asset.sha256)) {
       throw new Error(`${role}: invalid SHA-256 digest`);
     }
+    if (asset.uri !== `${approvedPrefix}${role}/${asset.sha256.slice(7)}`) {
+      throw new Error(`${role}: URI must contain only the public role and matching digest`);
+    }
     if (!Number.isSafeInteger(asset.byte_length) || asset.byte_length < 1) {
       throw new Error(`${role}: invalid byte length`);
     }
   }
   return index;
+}
+
+// Candidate private R2 key mapping. The bucket and credentials stay in the
+// release environment; only the role and content digest appear in public refs.
+export function privateObjectKeyForAsset(index, role, approvedPrefix) {
+  validatePrivateAssetIndex(index, approvedPrefix);
+  if (!Object.hasOwn(files, role)) {
+    throw new Error('unknown private asset role');
+  }
+  return `v1/${role}/${index.assets[role].sha256.slice(7)}`;
 }
 
 function hashRegularFile(file, expectedLength) {

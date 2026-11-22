@@ -8,7 +8,7 @@ const protectedSHA = 'sha256:' + 'a'.repeat(64);
 const cooperativeSHA = 'sha256:' + 'b'.repeat(64);
 const protectedEnvelope = Buffer.from('exact protected v2 envelope bytes');
 const cooperativeEnvelope = Buffer.from('exact cooperative v1 envelope bytes');
-const approvedPrefix = 's3://approved-stage2a/immutable/';
+const approvedPrefix = 'qualification://stage2a/';
 const report = (version, profile, payload, signature, payloadSHA, envelope) => ({
   report_schema_version: version,
   signature_purpose: `agent-bot/qualification-host-report/v${version}`,
@@ -23,7 +23,7 @@ const soulsBuild = {
   workflow: '.github/workflows/souls-build-receipt.yml',
   run_id: '123456789', run_attempt: 1,
   package_sha256: 'sha256:' + '5'.repeat(64),
-  receipt: { uri: approvedPrefix + 'souls-build-receipt.bundle.json',
+  receipt: { uri: approvedPrefix + 'souls-build-bundle/' + '6'.repeat(64),
     sha256: 'sha256:' + '6'.repeat(64) },
 };
 const assetIndex = {
@@ -35,12 +35,15 @@ const assetIndex = {
     ['cooperative-envelope', 'cooperative-envelope.json'],
     ['souls-package', 'souls-package.tgz'],
     ['souls-build-bundle', 'souls-build-receipt.bundle.json'],
-  ].map(([role, filename]) => [role, {
-    uri: approvedPrefix + filename,
-    sha256: role === 'souls-package' ? soulsBuild.package_sha256 :
-      role === 'souls-build-bundle' ? soulsBuild.receipt.sha256 : sha(filename),
-    byte_length: 1,
-  }])),
+  ].map(([role, filename]) => {
+    const assetSHA = role === 'souls-package' ? soulsBuild.package_sha256 :
+      role === 'souls-build-bundle' ? soulsBuild.receipt.sha256 : sha(filename);
+    return [role, {
+      uri: approvedPrefix + role + '/' + assetSHA.slice(7),
+      sha256: assetSHA,
+      byte_length: 1,
+    }];
+  })),
 };
 const indexBytes = Buffer.from(JSON.stringify(assetIndex, null, 2) + '\n');
 const qualificationRecord = {
@@ -175,6 +178,10 @@ test('private Souls fields and unreviewed receipt URI cannot enter a public Stat
   assert.equal(JSON.stringify(statement).includes('DO_NOT_PUBLISH_PRIVATE_SENTINEL'), false);
   assert.equal(statement.predicate.souls_build.receipt.uri,
     assetIndex.assets['souls-build-bundle'].uri);
+  assert.match(statement.predicate.souls_build.receipt.uri,
+    /^qualification:\/\/stage2a\/souls-build-bundle\/[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(statement).includes('s3://'), false);
+  assert.equal(JSON.stringify(statement).includes('r2://'), false);
   assert.deepEqual(Object.keys(statement.predicate.souls_build).sort(),
     Object.keys(soulsBuild).sort());
 });
@@ -183,7 +190,7 @@ test('Statement rejects missing or changed reviewed asset index', () => {
   assert.throws(() => build(qualification, preflight, policy, protectedEnvelope,
     cooperativeEnvelope, commit, expiry, null));
   const altered = structuredClone(assetIndex);
-  altered.assets['souls-build-bundle'].uri = approvedPrefix + 'other-receipt.json';
+  altered.assets['souls-build-bundle'].uri = approvedPrefix + 'souls-build-bundle/' + '0'.repeat(64);
   assert.throws(() => build(qualification, preflight, policy, protectedEnvelope,
     cooperativeEnvelope, commit, expiry, Buffer.from(JSON.stringify(altered, null, 2) + '\n')));
   assert.throws(() => build(qualification, preflight, policy, protectedEnvelope,
