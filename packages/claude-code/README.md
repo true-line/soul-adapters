@@ -13,6 +13,41 @@ agent and its background status probe inherit an isolated home and an offline
 sandbox on a disposable runner. This evaluates the upstream package only.
 Adapter integration, render support and profile qualification remain pending.
 
+### Stock release subject draft
+
+[`release-subject.draft.json`](release-subject.draft.json) records the exact
+Darwin arm64 stock release used by these probes. It is an **unqualified
+candidate**, separate from this package's placeholder `manifest.json`. The
+candidate's `adapter.package_sha256` is the release ZIP; its
+`adapter.executable_sha256` is the extracted `claude-agent-acp` binary. The
+adjacent `claude` executable has its own digest, version and locked SDK
+package integrity. The upstream tag, commit and Git tree identify the ACP
+source. The adjacent CLI's source tree is unavailable, so that field is null.
+
+The upstream binary workflow uses moving `macos-latest`, Node `lts/*` and Bun
+`latest`. Its source files and lockfile are pinned in the draft, but those
+source hashes do not establish the resolved build toolchain or an authenticated
+build receipt. The `true-line/soul-adapters` release source tree, workflow and
+receipt are also unset. A future v2 qualification must compare the installed
+absolute paths, ordered arguments and complete code inputs to the host
+reports, with the archive digest as the adapter package, the ACP executable
+digest as the launch executable, and the adjacent CLI digest as the native
+harness binary when that CLI is the selected harness. The separate Souls
+package and signed build receipt populate `souls_build`; this upstream ACP
+build source is never a substitute for them. The qualification must use the
+protected v2 and separate cooperative v1 host reports required by the
+[platform qualification decision](https://github.com/true-line/agent-bot-platform/blob/main/docs/04-decisions/PDR-0102-protected-adapter-qualification.md)
+and their reviewed `soul-contracts` schemas.
+This draft does not supply those reports or authorize a launch.
+
+`python3 -B packages/claude-code/release_subject.py` checks the local draft
+and refuses a nonempty `profiles_qualified` list. Add `--source-checkout` for
+the exact upstream tag checkout and `--archive` for the downloaded stock ZIP
+to verify source and binary bytes. The command reports only an unqualified
+draft and names each optional check as run or skipped. Run
+`python3 -B -m unittest discover -s packages/claude-code -p
+'release_subject_test.py'` for the pin and false-promotion refusals.
+
 ### Offline session probe
 
 Run `python3 packages/claude-code/session.py <pinned-release.zip>` as an
