@@ -12,7 +12,7 @@ const files = Object.freeze({
   'souls-build-bundle': 'souls-build-receipt.bundle.json',
 });
 
-function requireKeys(value, keys, label) {
+export function requireKeys(value, keys, label) {
   const actual = value !== null && typeof value === 'object' && !Array.isArray(value)
     ? Object.keys(value).sort() : [];
   const expected = [...keys].sort();
@@ -67,7 +67,7 @@ export function privateObjectKeyForAsset(index, role, approvedPrefix) {
   return `v1/${role}/${index.assets[role].sha256.slice(7)}`;
 }
 
-function inspectRegularFile(file) {
+export function inspectRegularFile(file) {
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const before = fs.fstatSync(fd, { bigint: true });
