@@ -1,6 +1,6 @@
 # Adapter qualification
 
-An adapter qualifies per enforcement profile on a named host, adapter version, and harness binary digest. Qualification is a `soul-conformance` run, not a self-declaration. The evidence payload in [soul-contracts PR #46](https://github.com/true-line/soul-contracts/pull/46) is still a draft: a shape-valid payload does not qualify an adapter or authorize a launch.
+An adapter qualifies per enforcement profile on a named host, adapter version, and harness binary digest. Qualification is a `soul-conformance` run, not a self-declaration. The evidence payload is specified by published [soul-contracts v0.6.0](https://github.com/true-line/soul-contracts/releases/tag/v0.6.0); a shape-valid payload does not qualify an adapter or authorize a launch.
 
 
 ## Release producer
