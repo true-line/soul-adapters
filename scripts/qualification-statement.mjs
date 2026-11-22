@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { validatePrivateAssetIndex } from './verify-private-assets.mjs';
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -17,6 +18,12 @@ const PURPOSES = {
 
 function digest(bytes) {
   return 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+}
+
+function exactKeys(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every(key => Object.hasOwn(value, key));
 }
 
 function boundReport(value, binding, payloadSHA, envelopeSHA, envelopeBytes) {
@@ -39,7 +46,8 @@ function boundReport(value, binding, payloadSHA, envelopeSHA, envelopeBytes) {
 }
 
 export function buildStatement(qualificationBytes, preflight, policyEnvelopeBytes,
-    protectedEnvelopeBytes, cooperativeEnvelopeBytes, sourceCommit, expiresAt, now = new Date()) {
+    protectedEnvelopeBytes, cooperativeEnvelopeBytes, assetIndexBytes, approvedAssetPrefix,
+    sourceCommit, expiresAt, now = new Date()) {
   if (!Buffer.isBuffer(qualificationBytes) || qualificationBytes.length === 0 ||
       qualificationBytes.length > (1 << 20) || !COMMIT.test(sourceCommit) ||
       !preflight || preflight.schema_version !== 2 ||
@@ -122,7 +130,11 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelopeByte
       cooperativeEnvelopeBytes),
   };
   const soulsBuild = qualification.souls_build;
-  if (soulsBuild?.source_repository !== 'true-line/agent-bot-souls' ||
+  if (!exactKeys(soulsBuild, ['source_repository', 'source_commit', 'source_tree',
+    'builder_sha256', 'toolchain_sha256', 'workflow', 'run_id', 'run_attempt',
+    'package_sha256', 'receipt']) ||
+      !exactKeys(soulsBuild.receipt, ['uri', 'sha256']) ||
+      soulsBuild.source_repository !== 'true-line/agent-bot-souls' ||
       !COMMIT.test(soulsBuild.source_commit) || !COMMIT.test(soulsBuild.source_tree) ||
       !SHA.test(soulsBuild.builder_sha256) || !SHA.test(soulsBuild.toolchain_sha256) ||
       !SHA.test(soulsBuild.package_sha256) || !SHA.test(soulsBuild.receipt?.sha256) ||
@@ -132,6 +144,25 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelopeByte
       !/^[1-9][0-9]{0,19}$/.test(soulsBuild.run_id) ||
       !Number.isSafeInteger(soulsBuild.run_attempt) || soulsBuild.run_attempt < 1) {
     throw new Error('Souls build provenance is missing or malformed');
+  }
+  if (!Buffer.isBuffer(assetIndexBytes) || assetIndexBytes.length === 0 ||
+      assetIndexBytes.length > (1 << 20)) {
+    throw new Error('reviewed private asset index is required');
+  }
+  let assetIndex;
+  try {
+    assetIndex = JSON.parse(assetIndexBytes.toString('utf8'));
+  } catch {
+    throw new Error('reviewed private asset index is invalid JSON');
+  }
+  if (!assetIndexBytes.equals(Buffer.from(JSON.stringify(assetIndex, null, 2) + '\n'))) {
+    throw new Error('reviewed private asset index is not canonical');
+  }
+  validatePrivateAssetIndex(assetIndex, approvedAssetPrefix);
+  if (soulsBuild.receipt.uri !== assetIndex.assets['souls-build-bundle'].uri ||
+      soulsBuild.receipt.sha256 !== assetIndex.assets['souls-build-bundle'].sha256 ||
+      soulsBuild.package_sha256 !== assetIndex.assets['souls-package'].sha256) {
+    throw new Error('Souls build does not match reviewed private asset index');
   }
   // Machine emits these fields after authenticating the separate build receipt
   // and measuring the Souls package. A claim in qualification.json alone is
@@ -163,7 +194,18 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelopeByte
     predicateType: PREDICATE,
     predicate: {
       host_reports: hostReports,
-      souls_build: soulsBuild,
+      souls_build: {
+        source_repository: soulsBuild.source_repository,
+        source_commit: soulsBuild.source_commit,
+        source_tree: soulsBuild.source_tree,
+        builder_sha256: soulsBuild.builder_sha256,
+        toolchain_sha256: soulsBuild.toolchain_sha256,
+        workflow: soulsBuild.workflow,
+        run_id: soulsBuild.run_id,
+        run_attempt: soulsBuild.run_attempt,
+        package_sha256: soulsBuild.package_sha256,
+        receipt: { uri: soulsBuild.receipt.uri, sha256: soulsBuild.receipt.sha256 },
+      },
       expires_at: expiresAt,
       release: {
         source_repository: 'true-line/soul-adapters',
@@ -175,16 +217,19 @@ export function buildStatement(qualificationBytes, preflight, policyEnvelopeByte
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.length !== 9) {
-    throw new Error('usage: qualification-statement.mjs QUALIFICATION PREFLIGHT POLICY_ENVELOPE PROTECTED_ENVELOPE COOPERATIVE_ENVELOPE SOURCE_COMMIT EXPIRES_AT');
+  if (process.argv.length !== 11) {
+    throw new Error('usage: qualification-statement.mjs QUALIFICATION PREFLIGHT POLICY_ENVELOPE PROTECTED_ENVELOPE COOPERATIVE_ENVELOPE PRIVATE_ASSET_INDEX APPROVED_ASSET_PREFIX SOURCE_COMMIT EXPIRES_AT');
   }
-  const [qualificationPath, preflightPath, policyPath, protectedPath, cooperativePath, commit, expires] = process.argv.slice(2);
+  const [qualificationPath, preflightPath, policyPath, protectedPath, cooperativePath,
+    assetIndexPath, approvedAssetPrefix, commit, expires] = process.argv.slice(2);
   const result = buildStatement(
     readFileSync(qualificationPath),
     JSON.parse(readFileSync(preflightPath, 'utf8')),
     readFileSync(policyPath),
     readFileSync(protectedPath),
     readFileSync(cooperativePath),
+    readFileSync(assetIndexPath),
+    approvedAssetPrefix,
     commit,
     expires,
   );

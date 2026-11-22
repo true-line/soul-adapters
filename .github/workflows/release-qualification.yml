@@ -151,6 +151,7 @@ jobs:
       - name: Prepare pinned Sigstore root and exact Statement
         env:
           EXPIRES_AT: ${{ inputs.expires_at }}
+          PRIVATE_ASSET_URI_PREFIX: ${{ vars.QUALIFICATION_PRIVATE_ASSET_URI_PREFIX }}
         run: |
           set -euo pipefail
           cp "$RUNNER_TEMP/machine/trust/qualification/owner-root.hex" "$RUNNER_TEMP/private/owner-root.hex"
@@ -163,6 +164,8 @@ jobs:
             "$RUNNER_TEMP/private/policy-envelope.json" \
             "$RUNNER_TEMP/private/protected-envelope.json" \
             "$RUNNER_TEMP/private/cooperative-envelope.json" \
+            "$RUNNER_TEMP/private/private-assets.json" \
+            "$PRIVATE_ASSET_URI_PREFIX" \
             "$GITHUB_SHA" "$EXPIRES_AT" \
             > "$RUNNER_TEMP/private/statement.json"
           node - "$RUNNER_TEMP/private/policy-envelope.json" "$RUNNER_TEMP/private/trusted-root.json" <<'NODE'
