@@ -2,7 +2,7 @@
 
 ACP adapter, render plugin, and qualification manifest. See `../../docs/`.
 
-Status: not started.
+Status: Stage 2a component checks in progress; no profile qualified.
 
 The Darwin arm64 [package smoke workflow](../../.github/workflows/claude-code-initialize.yml)
 checks the public [claude-agent-acp v0.109.0 release](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.109.0).
@@ -79,6 +79,35 @@ state under fresh private scratch. The same offline profile applies. The
 result measures signed-out ACP startup at the staged path. The test profile
 permits reads of macOS ICU data files named `/usr/share/icu/icudt<major>l.dat`.
 It keeps other writes confined to private scratch and denies network access.
+
+### HQ protected broker component probe
+
+After the matching Machine/HQ/Souls/Comms install packet is staged in an
+isolated Apple Silicon Tart guest, use `owner_broker_session.py` to drive one
+stock ACP turn through HQ's owner socket. The packet must provide the actual
+Machine-installed Soul package root, R-private working directory, and exact
+deterministic prompt and expected response files. Run from the authorized
+owner account, with the HQ service already activated under `_agent-bot-hq`:
+
+```sh
+python3 -B packages/claude-code/owner_broker_session.py \
+  --node /absolute/path/to/node \
+  --hq-main /absolute/path/to/hq/hq/main.mjs \
+  --package-root /absolute/machine/installed/soul/root \
+  --cwd /absolute/runner/private/work \
+  --prompt-file /private/fixture/prompt.txt \
+  --expected-response-file /private/fixture/response.txt \
+  --receipt /private/evidence/owner-acp.json
+```
+
+The driver sends ACP v1 `initialize`, `session/new`, and `session/prompt` on
+the same `soul.start --profile managed-protected --owner-control` connection.
+It cancels permission requests, requires the pinned adapter identity, a
+completed turn with usage and exact fixture response, then checks exit after
+stdin EOF. Its mode-0600 receipt records elapsed time and hashes, not prompt,
+response, session ID, or credential bytes. A successful probe is local
+component evidence only; it does not qualify a protected profile or replace
+independent A/Q-signed physical evidence.
 
 ### Ordinary-user control in a disposable macOS guest
 
