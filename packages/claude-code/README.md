@@ -109,6 +109,15 @@ response, session ID, or credential bytes. A successful probe is local
 component evidence only; it does not qualify a protected profile or replace
 independent A/Q-signed physical evidence.
 
+The optional `RawCapture` hook in `owner_broker_session.run` records exact ACP
+stdin/stdout lines in bounded memory and returns their byte-range references
+and complete blob hashes after `seal()`. It is an untrusted source component
+for the T03 owner driver. The default CLI emits no raw capture. Machine A must
+bind the resulting bytes to its one-use challenge and independently observed
+child, socket, profile, canary and cleanup facts through its authenticated
+intake. The installed R/B capture FD and challenge handoff are still being
+defined; this source component alone does not produce a T03 verdict.
+
 ### Ordinary-user control in a disposable macOS guest
 
 This comparison gives the adapter ordinary guest filesystem and process access

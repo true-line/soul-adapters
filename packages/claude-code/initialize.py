@@ -50,12 +50,14 @@ def unpack(archive, root):
             target.chmod(0o500)
 
 
-def read_frame(stream):
+def read_frame(stream, raw_sink=None):
     raw = stream.readline(65537)
     if not raw:
         return None
     if len(raw) > 65536 or not raw.endswith(b"\n"):
         raise ValueError("invalid ACP line")
+    if raw_sink is not None:
+        raw_sink(raw)
     frame = json.loads(raw)
     if not isinstance(frame, dict) or frame.get("jsonrpc") != "2.0":
         raise ValueError("invalid JSON-RPC frame")
@@ -105,11 +107,11 @@ def check_session(child, cwd):
     raise SessionRefused("session/new: response limit exceeded")
 
 
-def check_eof(stream, session_id):
+def check_eof(stream, session_id, raw_sink=None):
     # Session setup schedules its command list after returning the session ID.
     # Authentication status is also delivered asynchronously by the adapter.
     seen = set()
-    while (frame := read_frame(stream)) is not None:
+    while (frame := read_frame(stream, raw_sink)) is not None:
         if set(frame) != {"jsonrpc", "method", "params"}:
             raise ValueError("unexpected frame at EOF")
         method = frame["method"]

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import owner_broker_session as probe
+from t03_capture import RawCapture
 
 
 def child_with(*frames):
@@ -32,7 +33,9 @@ class OwnerBrokerProtocol(unittest.TestCase):
               "update": {"sessionUpdate": "usage_update"}}},
             {"id": 3, "result": {"stopReason": "end_turn"}},
         )
-        result = probe.run_protocol(child, Path("/private/member/work"), "fixture prompt", "pin")
+        capture = RawCapture()
+        result = probe.run_protocol(child, Path("/private/member/work"), "fixture prompt", "pin",
+                                    capture=capture)
         requests = [json.loads(line) for line in child.stdin.getvalue().splitlines()]
         self.assertEqual([item["method"] for item in requests],
                          ["initialize", "session/new", "session/prompt"])
@@ -42,6 +45,9 @@ class OwnerBrokerProtocol(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "end_turn")
         self.assertTrue(result["usage_seen"])
         self.assertEqual(result["notification_counts"], {"auth/status_update": 1, "session/update": 2})
+        sealed = capture.seal()
+        self.assertEqual(sealed["blobs"]["acp-in"], child.stdin.getvalue())
+        self.assertEqual(sealed["blobs"]["acp-out"], child.stdout.getvalue())
 
     def test_refuses_changed_provider_text(self):
         child = child_with(

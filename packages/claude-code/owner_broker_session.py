@@ -31,23 +31,27 @@ def require_guest():
         raise ValueError("requires Apple virtual hardware")
 
 
-def send(child, frame):
-    child.stdin.write(json.dumps({"jsonrpc": "2.0", **frame}, separators=(",", ":")).encode() + b"\n")
+def send(child, frame, capture=None):
+    raw = json.dumps({"jsonrpc": "2.0", **frame}, separators=(",", ":")).encode() + b"\n"
+    child.stdin.write(raw)
     child.stdin.flush()
+    if capture is not None:
+        capture.record("acp-in", raw)
 
 
-def reply(child, request_id, notices, transcript):
+def reply(child, request_id, notices, transcript, capture=None):
     for _ in range(256):
-        frame = read_frame(child.stdout)
+        frame = read_frame(child.stdout, (lambda raw: capture.record("acp-out", raw))
+                           if capture is not None else None)
         if frame is None:
             raise ValueError(f"ACP ended before reply {request_id}")
         transcript.update(json.dumps(frame, sort_keys=True, separators=(",", ":")).encode() + b"\n")
         if frame.get("method"):
             if "id" in frame and frame["id"] is not None:
                 if frame["method"] == "session/request_permission":
-                    send(child, {"id": frame["id"], "result": {"outcome": {"outcome": "cancelled"}}})
+                    send(child, {"id": frame["id"], "result": {"outcome": {"outcome": "cancelled"}}}, capture)
                 else:
-                    send(child, {"id": frame["id"], "error": {"code": -32601, "message": "method not found"}})
+                    send(child, {"id": frame["id"], "error": {"code": -32601, "message": "method not found"}}, capture)
             else:
                 notices(frame)
             continue
@@ -63,7 +67,7 @@ def reply(child, request_id, notices, transcript):
     raise ValueError(f"ACP response limit exceeded for {request_id}")
 
 
-def run_protocol(child, cwd, prompt, expected, phase=None, session_out=None):
+def run_protocol(child, cwd, prompt, expected, phase=None, session_out=None, capture=None):
     transcript = hashlib.sha256()
     chunks = []
     usage = False
@@ -87,16 +91,16 @@ def run_protocol(child, cwd, prompt, expected, phase=None, session_out=None):
     if phase is not None:
         phase[0] = "initialize"
     send(child, {"id": 1, "method": "initialize", "params": {"protocolVersion": 1,
-        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False}}})
-    initialized = reply(child, 1, notice, transcript)
+        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False}}}, capture)
+    initialized = reply(child, 1, notice, transcript, capture)
     info = initialized.get("agentInfo")
     if (initialized.get("protocolVersion") != 1 or not isinstance(info, dict)
             or info.get("name") != PACKAGE or info.get("version") != VERSION):
         raise ValueError("unexpected ACP package identity")
     if phase is not None:
         phase[0] = "session/new"
-    send(child, {"id": 2, "method": "session/new", "params": {"cwd": str(cwd), "mcpServers": []}})
-    session = reply(child, 2, notice, transcript)
+    send(child, {"id": 2, "method": "session/new", "params": {"cwd": str(cwd), "mcpServers": []}}, capture)
+    session = reply(child, 2, notice, transcript, capture)
     session_id = session.get("sessionId")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("session/new did not return a session ID")
@@ -105,8 +109,8 @@ def run_protocol(child, cwd, prompt, expected, phase=None, session_out=None):
     if phase is not None:
         phase[0] = "session/prompt"
     send(child, {"id": 3, "method": "session/prompt", "params": {"sessionId": session_id,
-        "prompt": [{"type": "text", "text": prompt}]}})
-    result = reply(child, 3, notice, transcript)
+        "prompt": [{"type": "text", "text": prompt}]}}, capture)
+    result = reply(child, 3, notice, transcript, capture)
     response = "".join(chunks)
     if result.get("stopReason") != "end_turn" or not usage:
         raise ValueError("ACP prompt did not finish with usage")
@@ -118,7 +122,7 @@ def run_protocol(child, cwd, prompt, expected, phase=None, session_out=None):
             "usage_seen": usage}
 
 
-def run(args):
+def run(args, capture=None):
     require_guest()
     for path in (args.node, args.hq_main, args.package_root, args.cwd,
                  args.prompt_file, args.expected_response_file):
@@ -158,13 +162,14 @@ def run(args):
     try:
         signal.signal(signal.SIGALRM, expired)
         signal.alarm(args.turn_timeout)
-        result = run_protocol(child, args.cwd, prompt, expected, phase, session)
+        result = run_protocol(child, args.cwd, prompt, expected, phase, session, capture)
         signal.alarm(0)
         phase[0] = "stdin EOF"
         limit[0] = args.exit_timeout
         child.stdin.close()
         signal.alarm(args.exit_timeout)
-        check_eof(child.stdout, session[0])
+        check_eof(child.stdout, session[0],
+                  (lambda raw: capture.record("acp-out", raw)) if capture is not None else None)
         if watchable and not events.control(None, 1, args.exit_timeout):
             raise TimeoutError("HQ owner ACP client did not exit after stdin EOF")
         signal.alarm(0)
