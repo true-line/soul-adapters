@@ -115,8 +115,10 @@ and complete blob hashes after `seal()`. It is an untrusted source component
 for the T03 owner driver. The default CLI emits no raw capture. Machine A must
 bind the resulting bytes to its one-use challenge and independently observed
 child, socket, profile, canary and cleanup facts through its authenticated
-intake. The installed R/B capture FD and challenge handoff are still being
-defined; this source component alone does not produce a T03 verdict.
+intake. The unchanged stock ACP child has no capture-FD writer. HQ's
+owner-control pipe and B's assigned relay are the ACP and HTTP observation
+boundaries; A must observe direct-route canaries itself and authenticate both
+HQ and B reports. This source component alone does not produce a T03 verdict.
 
 ### Ordinary-user control in a disposable macOS guest
 
