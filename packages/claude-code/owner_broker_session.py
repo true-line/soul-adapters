@@ -5,12 +5,14 @@ The Machine install packet supplies the exact paths and deterministic fixture.
 """
 
 import argparse
+from contextlib import suppress
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import select
 import signal
 import stat
 import subprocess
@@ -18,7 +20,7 @@ import sys
 import tempfile
 import time
 
-from initialize import PACKAGE, VERSION, read_frame
+from initialize import PACKAGE, VERSION, check_eof, read_frame, wait_for_process_group_exit
 
 
 def require_guest():
@@ -61,7 +63,7 @@ def reply(child, request_id, notices, transcript):
     raise ValueError(f"ACP response limit exceeded for {request_id}")
 
 
-def run_protocol(child, cwd, prompt, expected, phase=None):
+def run_protocol(child, cwd, prompt, expected, phase=None, session_out=None):
     transcript = hashlib.sha256()
     chunks = []
     usage = False
@@ -98,6 +100,8 @@ def run_protocol(child, cwd, prompt, expected, phase=None):
     session_id = session.get("sessionId")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("session/new did not return a session ID")
+    if session_out is not None:
+        session_out.append(session_id)
     if phase is not None:
         phase[0] = "session/prompt"
     send(child, {"id": 3, "method": "session/prompt", "params": {"sessionId": session_id,
@@ -131,6 +135,7 @@ def run(args):
     began = time.monotonic()
     phase = ["initialize"]
     limit = [args.turn_timeout]
+    session = []
     errors = tempfile.TemporaryFile()
     try:
         child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -138,30 +143,31 @@ def run(args):
     except Exception:
         errors.close()
         raise
+    events = select.kqueue()
+    try:
+        events.control([select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
+                       flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                       fflags=select.KQ_NOTE_EXIT)], 0, 0)
+        watchable = True
+    except ProcessLookupError:
+        # A very early HQ refusal can exit before the exit watch is installed.
+        watchable = False
     prior = signal.getsignal(signal.SIGALRM)
     def expired(*_):
         raise TimeoutError(f"{phase[0]}: {limit[0]}s deadline exceeded")
     try:
         signal.signal(signal.SIGALRM, expired)
         signal.alarm(args.turn_timeout)
-        result = run_protocol(child, args.cwd, prompt, expected, phase)
+        result = run_protocol(child, args.cwd, prompt, expected, phase, session)
         signal.alarm(0)
         phase[0] = "stdin EOF"
         limit[0] = args.exit_timeout
         child.stdin.close()
         signal.alarm(args.exit_timeout)
-        while (frame := read_frame(child.stdout)) is not None:
-            if not isinstance(frame.get("method"), str) or "id" in frame:
-                raise ValueError("unexpected ACP frame after prompt completion")
-            counts = result["notification_counts"]
-            counts[frame["method"]] = counts.get(frame["method"], 0) + 1
-        child.wait(timeout=args.exit_timeout)
+        check_eof(child.stdout, session[0])
+        if watchable and not events.control(None, 1, args.exit_timeout):
+            raise TimeoutError("HQ owner ACP client did not exit after stdin EOF")
         signal.alarm(0)
-        if child.returncode != 0:
-            raise ValueError(f"HQ owner ACP client exited {child.returncode}")
-        return {"outcome": "pass", "elapsed_seconds": round(time.monotonic() - began, 3),
-                "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
-                "expected_response_sha256": hashlib.sha256(expected.encode()).hexdigest(), **result}
     except Exception as error:
         if not isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
             errors.seek(0)
@@ -175,19 +181,26 @@ def run(args):
         # Keep the group leader PID reserved until the signal is delivered.
         # A reaped PID could be reused for another process group.
         if child.returncode is None:
-            try:
+            # An already-exited group can yield ESRCH or EPERM on macOS.
+            with suppress(ProcessLookupError, PermissionError):
                 os.killpg(child.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
         try:
-            child.wait(timeout=5)
+            wait_for_process_group_exit(child.pid)
         finally:
             try:
-                child.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
-            child.stdout.close()
-            errors.close()
+                child.wait(timeout=5)
+            finally:
+                # HQ may close its ACP pipe before our buffered stdin closes.
+                with suppress(BrokenPipeError, OSError):
+                    child.stdin.close()
+                child.stdout.close()
+                errors.close()
+                events.close()
+    if child.returncode != 0:
+        raise ValueError(f"HQ owner ACP client exited {child.returncode}")
+    return {"outcome": "pass", "elapsed_seconds": round(time.monotonic() - began, 3),
+            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+            "expected_response_sha256": hashlib.sha256(expected.encode()).hexdigest(), **result}
 
 
 def main():

@@ -3,6 +3,7 @@
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -78,7 +79,8 @@ class OwnerBrokerProtocol(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             fake = root / "fake_hq.py"
-            fake.write_text('''import json, sys
+            fake.write_text('''import json, subprocess, sys
+from pathlib import Path
 def send(frame):
     print(json.dumps({"jsonrpc": "2.0", **frame}), flush=True)
 for line in sys.stdin:
@@ -89,6 +91,10 @@ for line in sys.stdin:
     elif request["id"] == 2:
         send({"id": 2, "result": {"sessionId": "local"}})
     elif request["id"] == 3:
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+        Path(__file__).with_suffix(".pid").write_text(str(sleeper.pid))
         send({"method": "session/update", "params": {"sessionId": "local", "update":
               {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "pinned"}}}})
         send({"method": "session/update", "params": {"sessionId": "local", "update":
@@ -107,6 +113,10 @@ for line in sys.stdin:
                 result = probe.run(args)
             self.assertEqual(result["outcome"], "pass")
             self.assertEqual(result["response_sha256"], result["expected_response_sha256"])
+            sleeper_pid = fake.with_suffix(".pid").read_text()
+            state = subprocess.run(["/bin/ps", "-p", sleeper_pid, "-o", "stat="],
+                                   capture_output=True, text=True).stdout.strip()
+            self.assertTrue(not state or state.startswith("Z"), state)
 
     def test_owner_start_refusal_code_is_retained(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -124,6 +134,24 @@ for line in sys.stdin:
             with patch.object(probe, "require_guest"):
                 with self.assertRaisesRegex(ValueError, "HQ refusal host.launch_unavailable"):
                     probe.run(args)
+
+    def test_rejects_late_response_chunk_after_end_turn(self):
+        child = child_with(
+            {"id": 1, "result": {"protocolVersion": 1,
+                                "agentInfo": {"name": probe.PACKAGE, "version": probe.VERSION}}},
+            {"id": 2, "result": {"sessionId": "fixture-session"}},
+            {"method": "session/update", "params": {"sessionId": "fixture-session",
+              "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "pin"}}}},
+            {"method": "session/update", "params": {"sessionId": "fixture-session",
+              "update": {"sessionUpdate": "usage_update"}}},
+            {"id": 3, "result": {"stopReason": "end_turn"}},
+            {"method": "session/update", "params": {"sessionId": "fixture-session",
+              "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "extra"}}}},
+        )
+        session = []
+        probe.run_protocol(child, Path("/private/member/work"), "fixture prompt", "pin", session_out=session)
+        with self.assertRaises(ValueError):
+            probe.check_eof(child.stdout, session[0])
 
 
 if __name__ == "__main__":
