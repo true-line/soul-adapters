@@ -15,6 +15,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 from initialize import PACKAGE, VERSION, read_frame
@@ -130,8 +131,13 @@ def run(args):
     began = time.monotonic()
     phase = ["initialize"]
     limit = [args.turn_timeout]
-    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, start_new_session=True, cwd="/")
+    errors = tempfile.TemporaryFile()
+    try:
+        child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=errors, start_new_session=True, cwd="/")
+    except Exception:
+        errors.close()
+        raise
     prior = signal.getsignal(signal.SIGALRM)
     def expired(*_):
         raise TimeoutError(f"{phase[0]}: {limit[0]}s deadline exceeded")
@@ -156,6 +162,13 @@ def run(args):
         return {"outcome": "pass", "elapsed_seconds": round(time.monotonic() - began, 3),
                 "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                 "expected_response_sha256": hashlib.sha256(expected.encode()).hexdigest(), **result}
+    except Exception as error:
+        if not isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+            errors.seek(0)
+            codes = re.findall(rb'"code"\s*:\s*"([a-z0-9_.-]{1,80})"', errors.read(65536))
+            if codes:
+                raise ValueError(f"{error}; HQ refusal {codes[-1].decode()}") from error
+        raise
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, prior)
@@ -164,7 +177,7 @@ def run(args):
         if child.returncode is None:
             try:
                 os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
         try:
             child.wait(timeout=5)
@@ -174,6 +187,7 @@ def run(args):
             except (BrokenPipeError, OSError):
                 pass
             child.stdout.close()
+            errors.close()
 
 
 def main():

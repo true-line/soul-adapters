@@ -108,6 +108,23 @@ for line in sys.stdin:
             self.assertEqual(result["outcome"], "pass")
             self.assertEqual(result["response_sha256"], result["expected_response_sha256"])
 
+    def test_owner_start_refusal_code_is_retained(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / "fake_hq.py"
+            fake.write_text('import sys\nsys.stderr.write(\'{"code":"host.launch_unavailable"}\\n\')\n')
+            prompt = root / "prompt.txt"
+            expected = root / "expected.txt"
+            prompt.write_text("fixture prompt")
+            expected.write_text("pinned")
+            args = SimpleNamespace(node=Path(sys.executable), hq_main=fake,
+                                   package_root=root, cwd=root, prompt_file=prompt,
+                                   expected_response_file=expected, turn_timeout=5,
+                                   exit_timeout=5)
+            with patch.object(probe, "require_guest"):
+                with self.assertRaisesRegex(ValueError, "HQ refusal host.launch_unavailable"):
+                    probe.run(args)
+
 
 if __name__ == "__main__":
     unittest.main()
