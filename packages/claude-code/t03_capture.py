@@ -12,6 +12,7 @@ CHANNELS = frozenset(("acp-in", "acp-out", "relay-http-in", "relay-http-out",
 MAX_CHANNEL = 4 * 1024 * 1024
 # Reserve the full A-intake artifact allowance within its 8 MiB transfer cap.
 MAX_TOTAL = 8 * 1024 * 1024 - 65536
+MAX_RANGES = 256
 
 
 def _digest(raw):
@@ -33,7 +34,8 @@ class RawCapture:
         current = self._blobs.get(channel)
         if current is None:
             current = bytearray()
-        if len(current) + len(raw) > MAX_CHANNEL or self._total + len(raw) > MAX_TOTAL:
+        if (len(current) + len(raw) > MAX_CHANNEL or self._total + len(raw) > MAX_TOTAL
+                or len(self._ranges) >= MAX_RANGES):
             raise ValueError("raw capture limit exceeded")
         offset = len(current)
         self._blobs[channel] = current

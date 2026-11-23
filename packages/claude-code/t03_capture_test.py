@@ -4,7 +4,7 @@ import hashlib
 import io
 import unittest
 
-from t03_capture import MAX_CHANNEL, MAX_TOTAL, RawCapture
+from t03_capture import MAX_CHANNEL, MAX_RANGES, MAX_TOTAL, RawCapture
 from initialize import read_frame
 from owner_broker_session import reply, send
 
@@ -52,6 +52,16 @@ class RawCaptureTest(unittest.TestCase):
         sealed = capture.seal()
         self.assertEqual(sum(row["size_bytes"] for row in sealed["manifest_blobs"]), MAX_TOTAL)
         self.assertNotIn("soul-result", sealed["blobs"])
+
+    def test_refuse_excess_ranges_before_appending(self):
+        capture = RawCapture()
+        for _ in range(MAX_RANGES):
+            capture.record("acp-out", b"x")
+        with self.assertRaisesRegex(ValueError, "limit"):
+            capture.record("acp-out", b"y")
+        sealed = capture.seal()
+        self.assertEqual(sealed["blobs"]["acp-out"], b"x" * MAX_RANGES)
+        self.assertEqual(len(sealed["ranges"]), MAX_RANGES)
 
     def test_read_frame_sink_preserves_original_bytes(self):
         raw = b'{ "jsonrpc": "2.0", "id": 9, "result": {} }\n'
