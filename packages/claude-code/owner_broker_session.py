@@ -147,19 +147,20 @@ def run(args, capture=None):
     except Exception:
         errors.close()
         raise
-    events = select.kqueue()
-    try:
-        events.control([select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
-                       flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
-                       fflags=select.KQ_NOTE_EXIT)], 0, 0)
-        watchable = True
-    except ProcessLookupError:
-        # A very early HQ refusal can exit before the exit watch is installed.
-        watchable = False
     prior = signal.getsignal(signal.SIGALRM)
+    events = None
     def expired(*_):
         raise TimeoutError(f"{phase[0]}: {limit[0]}s deadline exceeded")
     try:
+        events = select.kqueue()
+        try:
+            events.control([select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
+                           flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                           fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            watchable = True
+        except ProcessLookupError:
+            # A very early HQ refusal can exit before the exit watch is installed.
+            watchable = False
         signal.signal(signal.SIGALRM, expired)
         signal.alarm(args.turn_timeout)
         result = run_protocol(child, args.cwd, prompt, expected, phase, session, capture)
@@ -200,7 +201,8 @@ def run(args, capture=None):
                     child.stdin.close()
                 child.stdout.close()
                 errors.close()
-                events.close()
+                if events is not None:
+                    events.close()
     if child.returncode != 0:
         raise ValueError(f"HQ owner ACP client exited {child.returncode}")
     return {"outcome": "pass", "elapsed_seconds": round(time.monotonic() - began, 3),

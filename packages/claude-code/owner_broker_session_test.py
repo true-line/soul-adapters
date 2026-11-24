@@ -141,6 +141,35 @@ for line in sys.stdin:
                 with self.assertRaisesRegex(ValueError, "HQ refusal host.launch_unavailable"):
                     probe.run(args)
 
+    def test_kqueue_setup_failure_stops_owner_client(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / "fake_hq.py"
+            fake.write_text("import time\ntime.sleep(30)\n")
+            prompt = root / "prompt.txt"
+            expected = root / "expected.txt"
+            prompt.write_text("fixture prompt")
+            expected.write_text("pinned")
+            args = SimpleNamespace(node=Path(sys.executable), hq_main=fake,
+                                   package_root=root, cwd=root, prompt_file=prompt,
+                                   expected_response_file=expected, turn_timeout=5,
+                                   exit_timeout=5)
+            launched = []
+            real_popen = subprocess.Popen
+
+            def launch(*argv, **kwargs):
+                child = real_popen(*argv, **kwargs)
+                launched.append(child)
+                return child
+
+            with patch.object(probe, "require_guest"), \
+                    patch.object(probe.select, "kqueue", side_effect=OSError("kqueue unavailable"),
+                                 create=True), \
+                    patch.object(probe.subprocess, "Popen", side_effect=launch):
+                with self.assertRaisesRegex(OSError, "kqueue unavailable"):
+                    probe.run(args)
+            self.assertIsNotNone(launched[0].poll())
+
     def test_rejects_late_response_chunk_after_end_turn(self):
         child = child_with(
             {"id": 1, "result": {"protocolVersion": 1,
